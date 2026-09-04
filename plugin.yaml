@@ -1,0 +1,68 @@
+name: zalo-oa-platform
+label: Zalo OA (chính thức)
+kind: platform
+version: 0.1.0
+description: >
+  Adapter Zalo Official Account cho Hermes Agent qua Open API chính thức
+  (webhook vào, /v3.0/oa/message/cs ra). Không dùng API không chính thức nên
+  không có rủi ro khoá tài khoản như plugin Zalo cá nhân. Đổi lại, OA chỉ nhắn
+  được trong 7 ngày kể từ tương tác cuối của khách và chỉ MIỄN PHÍ trong 48
+  giờ đầu — plugin có sổ theo dõi cửa sổ và mặc định chặn tin mất phí.
+author: Cộng đồng
+license: "MIT — dùng tự chịu trách nhiệm, tuân thủ điều khoản Zalo OA."
+
+requires_env:
+  - name: ZALO_OA_APP_ID
+    description: "App ID của ứng dụng trên developers.zalo.me (đã liên kết OA)."
+    prompt: "Zalo App ID"
+    password: false
+  - name: ZALO_OA_APP_SECRET
+    description: "App Secret — dùng KÝ OAuth (khác OA Secret Key)."
+    prompt: "Zalo App Secret"
+    password: true
+  - name: ZALO_OA_SECRET_KEY
+    description: "OA Secret Key — dùng XÁC THỰC CHỮ KÝ WEBHOOK (khác App Secret)."
+    prompt: "Zalo OA Secret Key"
+    password: true
+  - name: ZALO_OA_PUBLIC_BASE_URL
+    description: "URL HTTPS công khai trỏ về plugin, vd https://oa.example.com (Zalo gọi webhook vào đây)."
+    prompt: "Public base URL"
+    password: false
+
+optional_env:
+  - name: ZALO_OA_OWNER_UID
+    description: "user_id của chủ OA khi nhắn vào chính OA này — chỉ người này dùng được lệnh /bot."
+    prompt: "Owner user_id"
+    password: false
+  - name: ZALO_OA_SESSION_DIR
+    description: "Thư mục lưu token/sổ cửa sổ/media (mặc định /opt/data/zalo-oa)."
+    prompt: "Session dir"
+    password: false
+  - name: ZALO_OA_WEBHOOK_HOST
+    description: "Địa chỉ nghe webhook (mặc định 127.0.0.1 — để reverse proxy đứng trước)."
+    prompt: "Webhook host"
+    password: false
+  - name: ZALO_OA_WEBHOOK_PORT
+    description: "Cổng nghe webhook (mặc định 3939)."
+    prompt: "Webhook port"
+    password: false
+  - name: ZALO_OA_WEBHOOK_PATH
+    description: "Đường dẫn webhook (mặc định /webhooks/zalo-oa)."
+    prompt: "Webhook path"
+    password: false
+  - name: ZALO_OA_ALLOW_PAID_WINDOW
+    description: "true = cho phép gửi ngoài khung 48h (Zalo TÍNH PHÍ). Mặc định false = chặn."
+    prompt: "Cho phép tin mất phí?"
+    password: false
+  - name: ZALO_OA_WELCOME_MESSAGE
+    description: "Câu chào gửi ngay khi có người quan tâm OA. Bỏ trống = không chào."
+    prompt: "Welcome message"
+    password: false
+  - name: ZALO_OA_MAX_MESSAGE_LENGTH
+    description: "Độ dài tối đa mỗi tin trước khi cắt (mặc định 2000)."
+    prompt: "Max message length"
+    password: false
+  - name: ZALO_OA_HOME_CHANNEL
+    description: "user_id mặc định để cron/notification đẩy về."
+    prompt: "Home channel"
+    password: false
