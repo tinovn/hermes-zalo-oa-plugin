@@ -1,12 +1,11 @@
 """Media cho kênh OA: nén ảnh xuống dưới trần của Zalo, tải media inbound về.
 
-Hai ràng buộc của OA khác hẳn kênh cá nhân:
+Hai ràng buộc riêng của kênh OA:
 
   * **Ảnh gửi đi phải nhỏ hơn ~1MB** và chỉ png/jpeg/gif/webp. Ảnh chụp điện
     thoại 3-12MB bị từ chối thẳng, nên phải nén TRƯỚC khi upload.
-  * **Media inbound đến dưới dạng URL** (không phải file sẵn trên đĩa như
-    sidecar zca-js), nên phải tự tải về, có trần dung lượng để một file khổng
-    lồ không thổi bay RAM/đĩa.
+  * **Media inbound đến dưới dạng URL**, không phải file sẵn trên đĩa, nên phải
+    tự tải về, có trần dung lượng để một file khổng lồ không thổi bay RAM/đĩa.
 
 Nén ảnh fail-open như ``image_resize``: hỏng thì trả nguyên bản, để tầng trên
 quyết định (gửi link thay vì ảnh), không bao giờ ném lỗi ra ngoài.

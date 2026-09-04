@@ -1,7 +1,7 @@
 """Webhook Zalo OA: xác thực chữ ký, phân loại sự kiện, HTTP server.
 
-Zalo đẩy sự kiện tới một URL HTTPS công khai (khác hẳn kênh cá nhân: ở đó
-sidecar tự mở WebSocket ra ngoài). Vì vậy plugin phải TỰ mở cổng nghe.
+Zalo đẩy sự kiện tới một URL HTTPS công khai — plugin không kết nối ra ngoài
+mà phải TỰ mở cổng nghe.
 
 Chữ ký: header ``X-ZEvent-Signature: mac=<hex>`` với
 

@@ -2,7 +2,7 @@
 
 Plugin nối **Zalo Official Account** vào [Hermes Agent](https://github.com/) qua **Open API chính thức** của Zalo: tin đến bằng **webhook**, tin đi bằng `POST /v3.0/oa/message/cs`.
 
-Khác với plugin `zalo-personal` (dùng `zca-js` — API không chính thức, có rủi ro khoá tài khoản), kênh này hoàn toàn hợp lệ: không QR, không proxy dân cư, không sợ mất số. Đổi lại, OA **không được nhắn tự do**.
+Vì chạy trên Open API chính thức, kênh này hoàn toàn hợp lệ: không QR, không proxy dân cư, không sợ mất số. Đổi lại, OA **không được nhắn tự do**.
 
 ---
 

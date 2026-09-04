@@ -1,9 +1,8 @@
 """Zalo Official Account platform adapter cho Hermes Agent.
 
-Kênh CHÍNH THỨC, khác hẳn plugin `zalo-personal` (zca-js, API không chính
-thức, có rủi ro khoá tài khoản). Ở đây:
+Kênh CHÍNH THỨC, chạy hoàn toàn trên Open API được Zalo công bố:
 
-  * Tin đến qua **webhook HTTPS** do Zalo gọi vào, không phải WebSocket sidecar.
+  * Tin đến qua **webhook HTTPS** do Zalo gọi vào.
   * Tin đi qua **Open API v3.0** ``/oa/message/cs`` (tin Tư vấn).
   * OA **không nhắn tự do được**: chỉ trong 7 ngày kể từ tương tác cuối của
     người dùng, và chỉ miễn phí trong 48 giờ đầu — xem ``oa_window.py``.
