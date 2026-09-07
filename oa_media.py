@@ -21,7 +21,12 @@ import uuid
 from pathlib import Path
 from typing import Optional, Tuple
 
-from image_resize import resize_image_to_max_dim
+# Hermes nạp plugin như package (relative chạy); test và import lẻ chạy từ
+# repo root (absolute chạy). Phải đỡ cả hai, nếu không đứt ở đúng lúc gửi ảnh.
+try:  # pragma: no cover - phụ thuộc cách nạp
+    from .image_resize import resize_image_to_max_dim
+except ImportError:  # pragma: no cover
+    from image_resize import resize_image_to_max_dim
 
 logger = logging.getLogger(__name__)
 
