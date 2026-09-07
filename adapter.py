@@ -240,7 +240,11 @@ class ZaloOaAdapter(BasePlatformAdapter):
         return "zalo-oa"
 
     # ── vòng đời ─────────────────────────────────────────────────────────
-    async def connect(self) -> bool:
+    # is_reconnect: gateway truyền bằng keyword khi watcher dựng lại kết nối
+    # đã rớt. Kênh OA không giữ hàng đợi phía server (tin đến bằng webhook do
+    # Zalo đẩy) nên không cần xử lý khác, nhưng PHẢI nhận tham số — thiếu là
+    # gateway ném TypeError và platform không bao giờ lên được.
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         missing = [
             n
             for n, v in (
@@ -607,21 +611,35 @@ class ZaloOaAdapter(BasePlatformAdapter):
             return await self._send_attachment(str(chat_id), path, caption or "")
         return await self._send_attachment(str(chat_id), Path(image_url), caption or "")
 
+    # Tên tham số phải đúng ``file_path``: mọi call site trong Hermes (kanban
+    # watcher, notification, slash command, base adapter) đều gọi bằng keyword
+    # ``file_path=``. Đặt tên khác là TypeError mỗi lần gửi file — và chỉ lộ ra
+    # đúng lúc gửi, không phải lúc khởi động.
     async def send_document(
         self,
         chat_id: str,
-        document_path: str,
+        file_path: str,
         caption: Optional[str] = None,
+        file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         return await self._send_attachment(
-            str(chat_id), Path(document_path), caption or "", force_file=True
+            str(chat_id),
+            Path(file_path),
+            caption or "",
+            force_file=True,
+            override_name=file_name,
         )
 
     async def _send_attachment(
-        self, chat_id: str, path: Path, caption: str, force_file: bool = False
+        self,
+        chat_id: str,
+        path: Path,
+        caption: str,
+        force_file: bool = False,
+        override_name: Optional[str] = None,
     ) -> SendResult:
         blocked = self._check_window(chat_id)
         if blocked is not None:
@@ -631,7 +649,9 @@ class ZaloOaAdapter(BasePlatformAdapter):
         except OSError as e:
             return SendResult(success=False, error=f"không đọc được file: {e}")
 
-        filename = _media.safe_filename(path.name)
+        # override_name: tên hiển thị caller muốn khách nhìn thấy, có thể khác
+        # tên file tạm trên đĩa. Vẫn phải qua safe_filename.
+        filename = _media.safe_filename(override_name or path.name)
         is_image = _media.is_image_name(filename) and not force_file
         try:
             if is_image:

@@ -186,5 +186,54 @@ class RegistrationTest(unittest.TestCase):
         self.assertEqual(captured["name"], "zalo-oa")
 
 
+def _adapter_method_args(method_name: str):
+    """Trả (tên tham số vị trí, tên tham số keyword-only) của một method trong
+    ZaloOaAdapter, đọc thẳng từ AST nên không cần cài Hermes."""
+    with open(_ADAPTER, encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == "ZaloOaAdapter":
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == method_name:
+                    return (
+                        [a.arg for a in item.args.args],
+                        [a.arg for a in item.args.kwonlyargs],
+                    )
+    raise AssertionError(f"không tìm thấy method {method_name}")
+
+
+class AdapterSignatureContractTest(unittest.TestCase):
+    """Khoá chữ ký các method mà Hermes gọi BẰNG KEYWORD.
+
+    Lệch tên tham số ở đây không làm test nào khác đỏ, không làm import lỗi —
+    nó nổ lúc runtime, và với send_* thì chỉ nổ đúng lúc gửi file. Đã dính
+    thật: thiếu ``is_reconnect`` khiến platform không lên được, và
+    ``document_path`` thay vì ``file_path`` làm mọi lần gửi file ném TypeError.
+    """
+
+    def test_connect_accepts_is_reconnect_keyword(self):
+        _, kwonly = _adapter_method_args("connect")
+        self.assertIn("is_reconnect", kwonly, "gateway gọi connect(is_reconnect=...)")
+
+    def test_send_document_uses_file_path_and_file_name(self):
+        args, _ = _adapter_method_args("send_document")
+        self.assertIn("file_path", args, "call site dùng keyword file_path=")
+        self.assertIn("file_name", args, "base truyền thêm file_name=")
+        self.assertNotIn("document_path", args)
+
+    def test_send_image_param_names(self):
+        args, _ = _adapter_method_args("send_image")
+        self.assertIn("image_url", args)
+
+    def test_send_image_file_param_names(self):
+        args, _ = _adapter_method_args("send_image_file")
+        self.assertIn("image_path", args)
+
+    def test_send_param_names(self):
+        args, _ = _adapter_method_args("send")
+        for expected in ("chat_id", "content", "reply_to", "metadata"):
+            self.assertIn(expected, args)
+
+
 if __name__ == "__main__":
     unittest.main()
