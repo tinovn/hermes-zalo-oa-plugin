@@ -256,5 +256,92 @@ class SendTest(unittest.TestCase):
             asyncio.run(self.c.send_file("u1", "bao-gia.pdf", "application/pdf", b"%PDF", ""))
 
 
+class OaTypeFallbackTest(unittest.TestCase):
+    """OA cơ quan nhà nước bị -235 ở /v3.0/oa/message/cs nhưng gửi được qua
+    /v2.0/oa/message. Đã gặp thật với OA loại "Tỉnh"; nếu không tự chuyển thì
+    OA đó không trả lời được câu nào."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.c = _client(self.dir)
+        self.c.tokens.save("acc", "ref", oa_client.time.time() + 3600)
+
+    def _fake_post(self, calls, v3_error=None):
+        async def fake(url, payload):
+            calls.append(url)
+            if url == oa_client.MESSAGE_CS_URL and v3_error is not None:
+                raise v3_error
+            return {"data": {"message_id": "m1"}}
+
+        return fake
+
+    def test_falls_back_to_v2_on_minus_235(self):
+        calls = []
+        err = oa_client.OaPermanentError(-235, "This API does not support this type of OA")
+        with mock.patch.object(self.c, "_post_json", side_effect=self._fake_post(calls, err)):
+            msg_id = asyncio.run(self.c.send_text("u1", "chào"))
+        self.assertEqual(msg_id, "m1", "tin vẫn phải gửi được")
+        self.assertEqual(calls, [oa_client.MESSAGE_CS_URL, oa_client.MESSAGE_V2_URL])
+
+    def test_v2_is_pinned_after_first_fallback(self):
+        calls = []
+        err = oa_client.OaPermanentError(-235, "This API does not support this type of OA")
+        with mock.patch.object(self.c, "_post_json", side_effect=self._fake_post(calls, err)):
+            asyncio.run(self.c.send_text("u1", "tin 1"))
+            asyncio.run(self.c.send_text("u1", "tin 2"))
+            asyncio.run(self.c.send_text("u1", "tin 3"))
+        # Chỉ tin đầu chịu một lần gọi hỏng; hai tin sau đi thẳng v2.0.
+        self.assertEqual(
+            calls,
+            [oa_client.MESSAGE_CS_URL, oa_client.MESSAGE_V2_URL,
+             oa_client.MESSAGE_V2_URL, oa_client.MESSAGE_V2_URL],
+        )
+
+    def test_other_permanent_errors_are_not_swallowed(self):
+        calls = []
+        err = oa_client.OaPermanentError(-201, "file is invalid")
+        with mock.patch.object(self.c, "_post_json", side_effect=self._fake_post(calls, err)):
+            with self.assertRaises(oa_client.OaPermanentError):
+                asyncio.run(self.c.send_text("u1", "chào"))
+        self.assertEqual(calls, [oa_client.MESSAGE_CS_URL], "không được thử v2.0 với lỗi khác")
+
+    def test_window_error_still_raises(self):
+        # -230 quá 7 ngày: đổi endpoint không cứu được, phải ném lên như cũ.
+        calls = []
+        err = oa_client.OaWindowError(-230, "hết cửa sổ")
+        with mock.patch.object(self.c, "_post_json", side_effect=self._fake_post(calls, err)):
+            with self.assertRaises(oa_client.OaWindowError):
+                asyncio.run(self.c.send_text("u1", "chào"))
+        self.assertEqual(calls, [oa_client.MESSAGE_CS_URL])
+
+    def test_normal_oa_pins_v3_and_never_calls_v2(self):
+        calls = []
+        with mock.patch.object(self.c, "_post_json", side_effect=self._fake_post(calls)):
+            asyncio.run(self.c.send_text("u1", "tin 1"))
+            asyncio.run(self.c.send_text("u1", "tin 2"))
+        self.assertEqual(calls, [oa_client.MESSAGE_CS_URL, oa_client.MESSAGE_CS_URL])
+
+    def test_image_and_file_also_fall_back(self):
+        err = oa_client.OaPermanentError(-235, "This API does not support this type of OA")
+
+        async def fake_upload(*a, **k):
+            return "att1"
+
+        for kind in ("image", "file"):
+            calls = []
+            c = _client(Path(tempfile.mkdtemp()))
+            c.tokens.save("acc", "ref", oa_client.time.time() + 3600)
+            with mock.patch.object(c, "_upload", side_effect=fake_upload), \
+                 mock.patch.object(c, "_post_json", side_effect=self._fake_post(calls, err)):
+                if kind == "image":
+                    asyncio.run(c.send_image("u1", "a.png", "image/png", b"x", ""))
+                else:
+                    asyncio.run(c.send_file("u1", "a.pdf", "application/pdf", b"x", ""))
+            self.assertEqual(
+                calls, [oa_client.MESSAGE_CS_URL, oa_client.MESSAGE_V2_URL],
+                f"send_{kind} phải fallback như send_text",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

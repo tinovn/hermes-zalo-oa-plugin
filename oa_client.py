@@ -41,6 +41,12 @@ OAUTH_TOKEN_URL = "https://oauth.zaloapp.com/v4/oa/access_token"
 # Gửi tin PHẢI có sub-path loại tin; gọi trần /v3.0/oa/message trả 404
 # "You are accessing an empty or invalid API". `cs` = consultation (tin Tư vấn).
 MESSAGE_CS_URL = "https://openapi.zalo.me/v3.0/oa/message/cs"
+# OA cơ quan nhà nước (và vài loại khác) bị Zalo chặn ở /v3.0/oa/message/cs
+# với mã -235, nhưng vẫn gửi được qua endpoint v2.0 cũ. Đã kiểm chứng bằng OA
+# thật loại "Tỉnh": v3.0 trả -235, v2.0 trả error 0 kèm message_id.
+MESSAGE_V2_URL = "https://openapi.zalo.me/v2.0/oa/message"
+# Mã báo "API này không hỗ trợ loại OA của bạn" — tín hiệu để chuyển sang v2.0.
+OA_TYPE_UNSUPPORTED = -235
 USER_DETAIL_URL = "https://openapi.zalo.me/v3.0/oa/user/detail"
 # Các API đọc hội thoại + upload nằm ở v2.0, không phải v3.0.
 GET_OA_URL = "https://openapi.zalo.me/v2.0/oa/getoa"
@@ -207,6 +213,9 @@ class OaClient:
         self.app_secret = (app_secret or "").strip()
         self.tokens = token_store
         self._refresh_lock = asyncio.Lock()
+        # None = chưa biết OA này dùng endpoint nào. Sau lần -235 đầu tiên thì
+        # ghim v2.0 lại, để không tin nào cũng phải ăn một lần gọi hỏng.
+        self._message_url: Optional[str] = None
 
     # ── OAuth ──
     def permission_url(self, redirect_uri: str, state: str) -> str:
@@ -316,6 +325,30 @@ class OaClient:
         data = d.get("data")
         return data if isinstance(data, list) else []
 
+    async def _post_message(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Gửi tin, tự chọn endpoint hợp với loại OA.
+
+        Mặc định v3.0 ``/oa/message/cs`` (đúng loại tin Tư vấn, dùng cho OA
+        doanh nghiệp). OA cơ quan nhà nước bị trả -235 ở đó nhưng gửi được qua
+        v2.0 ``/oa/message`` — ghim lại sau lần đầu để khỏi gọi hỏng mỗi lần.
+        """
+        if self._message_url is not None:
+            return await self._post_json(self._message_url, payload)
+        try:
+            d = await self._post_json(MESSAGE_CS_URL, payload)
+        except OaPermanentError as e:
+            if e.code != OA_TYPE_UNSUPPORTED:
+                raise
+            logger.warning(
+                "[zalo-oa] OA không dùng được /v3.0/oa/message/cs (-235) — "
+                "chuyển sang /v2.0/oa/message cho mọi tin sau"
+            )
+            d = await self._post_json(MESSAGE_V2_URL, payload)
+            self._message_url = MESSAGE_V2_URL
+            return d
+        self._message_url = MESSAGE_CS_URL
+        return d
+
     async def send_text(
         self, user_id: str, text: str, quote_message_id: Optional[str] = None
     ) -> str:
@@ -324,15 +357,15 @@ class OaClient:
             message["quote_message_id"] = str(quote_message_id)
         payload = {"recipient": {"user_id": str(user_id)}, "message": message}
         try:
-            d = await self._post_json(MESSAGE_CS_URL, payload)
+            d = await self._post_message(payload)
         except (OaPermanentError, OaTransientError):
             # quote_message_id sai/hết hạn bị từ chối như lỗi tham số. Thà gửi
             # tin không trích dẫn còn hơn nuốt luôn câu trả lời.
             if not quote_message_id:
                 raise
             logger.info("[zalo-oa] quote bị từ chối — gửi lại không trích dẫn")
-            d = await self._post_json(
-                MESSAGE_CS_URL, {"recipient": {"user_id": str(user_id)}, "message": {"text": text}}
+            d = await self._post_message(
+                {"recipient": {"user_id": str(user_id)}, "message": {"text": text}}
             )
         return str(((d.get("data") or {}).get("message_id")) or "")
 
@@ -380,8 +413,8 @@ class OaClient:
         }
         if caption:
             message["text"] = caption
-        d = await self._post_json(
-            MESSAGE_CS_URL, {"recipient": {"user_id": str(user_id)}, "message": message}
+        d = await self._post_message(
+            {"recipient": {"user_id": str(user_id)}, "message": message}
         )
         return str(((d.get("data") or {}).get("message_id")) or "")
 
@@ -392,7 +425,7 @@ class OaClient:
         message: Dict[str, Any] = {"attachment": {"type": "file", "payload": {"token": token_id}}}
         if caption:
             message["text"] = caption
-        d = await self._post_json(
-            MESSAGE_CS_URL, {"recipient": {"user_id": str(user_id)}, "message": message}
+        d = await self._post_message(
+            {"recipient": {"user_id": str(user_id)}, "message": message}
         )
         return str(((d.get("data") or {}).get("message_id")) or "")
