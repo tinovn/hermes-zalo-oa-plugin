@@ -224,25 +224,16 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(status, 401)
         self.assertEqual(got, [])
 
-    # Zalo chỉ lưu webhook URL khi POST kiểm tra nhận 200, và request đó không
-    # mang chữ ký. Ba test dưới khoá đúng ranh giới: THIẾU header thì nới,
-    # header SAI thì vẫn chặn.
-    def test_probe_without_signature_gets_200_and_is_not_dispatched(self):
+    # Request "Kiểm tra" của Zalo CÓ ký — xác nhận bằng traffic thật bắt được
+    # ở production: User-Agent ZaloWebhook, kèm mac hợp lệ. Nên KHÔNG có ngoại
+    # lệ nào cho request thiếu chữ ký: thiếu hay sai đều 401.
+    def test_unsigned_post_is_rejected(self):
         body = json.dumps(_event("user_send_text"))
-        status, payload, got = self._run(body, None)
-        self.assertEqual(status, 200)
-        self.assertTrue(payload["probe"])
-        self.assertEqual(got, [], "request không chữ ký KHÔNG được đẩy vào agent")
-
-    def test_probe_with_empty_body_gets_200(self):
-        status, payload, got = self._run("", None)
-        self.assertEqual(status, 200)
-        self.assertTrue(payload["probe"])
+        status, _, got = self._run(body, None)
+        self.assertEqual(status, 401)
         self.assertEqual(got, [])
 
-    def test_present_but_empty_mac_is_rejected_not_treated_as_probe(self):
-        # "mac=" là header CÓ MẶT nhưng rỗng — đó là chữ ký hỏng, không phải
-        # request kiểm tra. Phải 401 để Zalo gửi lại, không được nới thành 200.
+    def test_present_but_empty_mac_is_rejected(self):
         body = json.dumps(_event("user_send_text"))
         status, _, got = self._run(body, "")
         self.assertEqual(status, 401)

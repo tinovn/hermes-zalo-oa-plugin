@@ -244,27 +244,10 @@ class _Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             length = 0
-        if length > _MAX_BODY_BYTES:
+        if length <= 0 or length > _MAX_BODY_BYTES:
             self._send(400, {"error": "bad length"})
             return
-        raw_bytes = self.rfile.read(length) if length > 0 else b""
-
-        # Zalo CHỈ lưu webhook URL khi POST kiểm tra của nó nhận được 200, mà
-        # request đó không mang chữ ký. Đòi chữ ký ở đây = không bao giờ đăng
-        # ký được webhook. Nên: không có header chữ ký thì trả 200 nhưng KHÔNG
-        # xử lý gì — không có chữ ký thì không có gì đáng tin để xử lý.
-        #
-        # Chỉ nới đúng trường hợp THIẾU HẲN header. Có header mà sai vẫn 401
-        # (bên dưới): sai khoá là lỗi cấu hình, phải kêu to và để Zalo gửi lại,
-        # chứ nuốt bằng 200 thì mất tin mà không ai biết.
-        if not str(self.headers.get("X-ZEvent-Signature") or "").strip():
-            logger.info("[zalo-oa] POST không chữ ký — coi là request kiểm tra, trả 200 và bỏ qua")
-            self._send(200, {"ok": True, "probe": True})
-            return
-
-        if length <= 0:
-            self._send(400, {"error": "bad length"})
-            return
+        raw_bytes = self.rfile.read(length)
         raw_body = raw_bytes.decode("utf-8", "replace")
         try:
             event = json.loads(raw_body)
