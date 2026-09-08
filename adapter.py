@@ -49,6 +49,7 @@ try:  # pragma: no cover - phụ thuộc cách nạp
     from . import oa_client as _oa
     from . import oa_media as _media
     from . import oa_webhook as _hook
+    from . import oa_tools as _tools
     from . import outbound_scrub as _scrub
     from .oa_window import ConsultationWindow
 except Exception:  # pragma: no cover
@@ -69,6 +70,7 @@ except Exception:  # pragma: no cover
     _media = _load("zalo_oa_media", "oa_media.py")
     _hook = _load("zalo_oa_webhook", "oa_webhook.py")
     _scrub = _load("zalo_oa_outbound_scrub", "outbound_scrub.py")
+    _tools = _load("zalo_oa_tools", "oa_tools.py")
     ConsultationWindow = _load("zalo_oa_window", "oa_window.py").ConsultationWindow
 
 _classify_outbound = _msgfilter.classify
@@ -207,6 +209,8 @@ class ZaloOaAdapter(BasePlatformAdapter):
         self.webhook_port = int(os.getenv("ZALO_OA_WEBHOOK_PORT") or DEFAULT_WEBHOOK_PORT)
         self.webhook_path = os.getenv("ZALO_OA_WEBHOOK_PATH", DEFAULT_WEBHOOK_PATH).strip()
 
+        # Đặt trước connect() để oa_tools hỏi tới lúc chưa kết nối vẫn ra None.
+        self._loop = None
         self.session_dir = _session_dir()
         self.media_dir = self.session_dir / "media"
         # Chủ OA (user_id của sếp khi nhắn vào chính OA này) — chỉ người này
@@ -260,6 +264,11 @@ class ZaloOaAdapter(BasePlatformAdapter):
             return False
 
         loop = asyncio.get_running_loop()
+        # Tool gửi file chạy trong thread pool của Hermes, phải bắc cầu về
+        # đúng loop này để dùng chung OaClient (và khoá chống refresh song
+        # song) — xem oa_tools.py.
+        self._loop = loop
+        _tools.set_live_adapter(self)
         self._server = _hook.WebhookServer(
             host=self.webhook_host,
             port=self.webhook_port,
@@ -295,6 +304,8 @@ class ZaloOaAdapter(BasePlatformAdapter):
         return True
 
     async def disconnect(self) -> None:
+        _tools.clear_live_adapter(self)
+        self._loop = None
         if self._server is not None:
             self._server.stop()
             self._server = None
@@ -810,10 +821,19 @@ def register(ctx):
             "chỉ render plain text. Câu ngắn gọn, lịch sự, đúng giọng chăm sóc "
             "khách hàng của doanh nghiệp. Đây là kênh CHÍNH THỨC: không hứa hẹn "
             "sai, không xin số điện thoại ngoài luồng. KHÔNG tự giới thiệu là "
-            "Hermes / Codex / GPT / OpenAI / Anthropic."
+            "Hermes / Codex / GPT / OpenAI / Anthropic. "
+            "Gửi tệp/ảnh cho khách thì dùng zalo_oa_send_file / "
+            "zalo_oa_send_image. TUYỆT ĐỐI không dùng zalo_send_file, "
+            "zalo_send_image hay bất kỳ tool zalo_* nào khác — chúng thuộc kênh "
+            "Zalo cá nhân, không gửi được qua OA. Tệp tài liệu phải là PDF; "
+            "Zalo OA từ chối .docx/.doc/.csv."
         ),
     )
     try:
         ctx.register_platform(**kwargs, cron_deliver_env_var="ZALO_OA_HOME_CHANNEL")
     except TypeError:
         ctx.register_platform(**kwargs)
+
+    # Tool đính kèm đi bằng Open API của OA. Bắt buộc phải có: nếu không,
+    # agent sẽ vớ lấy zalo_send_file của kênh Zalo CÁ NHÂN và luôn thất bại.
+    _tools.register_tools(ctx)
