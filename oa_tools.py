@@ -17,9 +17,13 @@ Ba ràng buộc phải trả giá mới biết, đừng phá:
    refresh song song thuộc loop của gateway. Gọi coroutine từ thread khác sẽ
    làm hỏng khoá đó, nên phải đi qua ``run_coroutine_threadsafe``.
 
-3. **Chỉ nhận file local, KHÔNG nhận URL.** Kênh OA mở cho người lạ nhắn vào;
-   một tool tải URL tuỳ ý do agent chọn là lỗ SSRF trỏ thẳng vào mạng nội bộ.
-   Cần gửi file từ web thì tải về đĩa bằng tool khác trước, rồi truyền path.
+3. **Nhận URL thì PHẢI chặn SSRF.** Kênh OA mở cho người lạ, nên một tool
+   tải URL tuỳ ý là lỗ SSRF trỏ vào mạng nội bộ. Bản đầu chọn cách dễ là từ
+   chối thẳng URL — sai lầm: agent có ảnh QR dạng URL, không còn tool nào tải
+   về đĩa (52 tool cá nhân đã bị chặn khỏi kênh OA), nên nó thử lại vô hạn và
+   spam khách. Ngõ cụt còn tệ hơn rủi ro. Giờ nhận URL nhưng qua
+   ``_check_public_url``: chỉ http/https, phân giải DNS rồi từ chối mọi IP
+   không phải public, KHÔNG theo redirect, có trần dung lượng.
 
 4. **Tên tool KHÔNG được bắt đầu bằng ``zalo_``.** Plugin Zalo cá nhân cài
    cùng máy đăng ký một hook ``pre_tool_call`` gác mọi tool có tiền tố đó
@@ -36,9 +40,15 @@ hội thoại. Hai tool này chỉ để đính kèm.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
+import socket
+import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -107,6 +117,13 @@ def _str(v: Any) -> str:
 # ── tìm người nhận ────────────────────────────────────────────────────────
 
 
+def _safe_basename(name: str) -> str:
+    """Chỉ giữ phần tên file. Chặn ../ và dấu phân cách để một filename do
+    model đặt không ghi ra ngoài thư mục tạm."""
+    base = os.path.basename((name or "").replace("\\", "/").strip()) or "tepdinhkem"
+    return base[:120]
+
+
 def _hermes_home() -> Path:
     return Path(os.getenv("HERMES_HOME") or (Path.home() / ".hermes"))
 
@@ -135,6 +152,82 @@ def resolve_chat_id_from_task(task_id: str) -> str:
     return ""
 
 
+# ── tải file từ URL, có chặn SSRF ─────────────────────────────────────────
+
+# Thời gian chờ khi tải. Ngắn để một URL treo không giữ luôn lượt hội thoại.
+_FETCH_TIMEOUT_S = 20.0
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Chặn redirect. Cho phép redirect là mở lại đúng lỗ vừa bịt: URL công
+    khai có thể 302 sang 127.0.0.1 hoặc 169.254.169.254."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _check_public_url(url: str) -> Optional[str]:
+    """Trả None nếu URL an toàn, hoặc câu lỗi nếu không.
+
+    Phân giải DNS rồi soi TỪNG địa chỉ trả về: chỉ chấp nhận IP public. Chặn
+    loopback, private, link-local (gồm 169.254.169.254 metadata của cloud),
+    multicast và reserved.
+
+    Còn một khe hẹp là DNS rebinding giữa lúc kiểm và lúc tải; đóng hẳn thì
+    phải tự mở socket tới IP đã kiểm rồi ép SNI, phức tạp hơn nhiều. Với mức
+    rủi ro ở đây (chỉ tải về rồi upload cho Zalo, không đọc nội dung ra) thì
+    kiểm DNS + cấm redirect là đủ.
+    """
+    try:
+        parts = urllib.parse.urlparse(url)
+    except ValueError:
+        return "URL không hợp lệ"
+    if parts.scheme not in ("http", "https"):
+        return f"chỉ nhận http/https, không nhận {parts.scheme!r}"
+    host = parts.hostname
+    if not host:
+        return "URL thiếu tên miền"
+    try:
+        infos = socket.getaddrinfo(host, parts.port or (443 if parts.scheme == "https" else 80))
+    except socket.gaierror as e:
+        return f"không phân giải được tên miền {host}: {e}"
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if not ip.is_global or ip.is_multicast:
+            return f"URL trỏ vào địa chỉ nội bộ ({ip}) — từ chối"
+    return None
+
+
+def _download(url: str, max_bytes: int) -> Tuple[Optional[bytes], Optional[str], Optional[str]]:
+    """Trả (data, filename_goi_y, loi)."""
+    guard = _check_public_url(url)
+    if guard:
+        return None, None, guard
+    opener = urllib.request.build_opener(_NoRedirect)
+    req = urllib.request.Request(url, headers={"User-Agent": "hermes-zalo-oa/1.0"})
+    try:
+        with opener.open(req, timeout=_FETCH_TIMEOUT_S) as r:
+            # Đọc dư 1 byte để phân biệt "vừa đủ trần" với "vượt trần".
+            data = r.read(max_bytes + 1)
+            ctype = (r.headers.get("Content-Type") or "").split(";")[0].strip()
+    except urllib.error.HTTPError as e:
+        if e.code in (301, 302, 303, 307, 308):
+            return None, None, "URL chuyển hướng — không theo redirect vì lý do an toàn"
+        return None, None, f"tải URL lỗi HTTP {e.code}"
+    except Exception as e:
+        return None, None, f"tải URL thất bại: {e}"
+    if not data:
+        return None, None, "URL trả về nội dung rỗng"
+    if len(data) > max_bytes:
+        return None, None, f"file từ URL vượt trần {max_bytes} byte"
+    name = os.path.basename(urllib.parse.urlparse(url).path) or ""
+    if "." not in name:
+        ext = {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif",
+               "image/webp": ".webp", "application/pdf": ".pdf"}.get(ctype, "")
+        name = (name or "tepdinhkem") + ext
+    return data, name, None
+
+
 # ── bắc cầu sang loop của gateway ─────────────────────────────────────────
 
 
@@ -160,31 +253,42 @@ def _send(params: Dict[str, Any], *, force_file: bool) -> Dict[str, Any]:
     if adapter is None:
         return {"success": False, "error": "kênh zalo-oa chưa kết nối"}
 
-    # Chặn URL ngay và nói rõ lý do, đừng để model thử lại mãi. Xem ràng buộc 3.
-    if _str(params.get("url")) or _str(params.get("file_url")):
-        return {
-            "success": False,
-            "error": "tool này không nhận URL (tránh SSRF) — tải file về đĩa rồi truyền file_path",
-        }
-
+    url = _str(params.get("url")) or _str(params.get("file_url")) or _str(params.get("image_url"))
     file_path = _str(params.get("file_path"))
-    if not file_path:
-        return {"success": False, "error": "thiếu file_path — đường dẫn file trên máy chủ"}
-
-    path = Path(file_path)
-    try:
-        if not path.is_file():
-            return {"success": False, "error": f"file không tồn tại: {file_path}"}
-        size = path.stat().st_size
-    except OSError as e:
-        return {"success": False, "error": f"không đọc được file: {e}"}
-    if size <= 0:
-        return {"success": False, "error": f"file rỗng: {file_path}"}
-    if size > SEND_FILE_MAX_BYTES:
+    if not url and not file_path:
         return {
             "success": False,
-            "error": f"file {size} byte, vượt trần {SEND_FILE_MAX_BYTES} byte của Zalo OA",
+            "error": "cần file_path (đường dẫn trên máy chủ) hoặc url (http/https công khai)",
         }
+
+    tmp_path: Optional[Path] = None
+    if not file_path:
+        # Nguồn là URL: tải về thư mục tạm rồi gửi như file thường.
+        data, name, err = _download(url, SEND_FILE_MAX_BYTES)
+        if err:
+            return {"success": False, "error": err, "url": url}
+        try:
+            tmp_dir = Path(tempfile.mkdtemp(prefix="zalo-oa-"))
+            tmp_path = tmp_dir / _safe_basename(_str(params.get("filename")) or name)
+            tmp_path.write_bytes(data)
+        except OSError as e:
+            return {"success": False, "error": f"không ghi được file tạm: {e}"}
+        path, size = tmp_path, len(data)
+    else:
+        path = Path(file_path)
+        try:
+            if not path.is_file():
+                return {"success": False, "error": f"file không tồn tại: {file_path}"}
+            size = path.stat().st_size
+        except OSError as e:
+            return {"success": False, "error": f"không đọc được file: {e}"}
+        if size <= 0:
+            return {"success": False, "error": f"file rỗng: {file_path}"}
+        if size > SEND_FILE_MAX_BYTES:
+            return {
+                "success": False,
+                "error": f"file {size} byte, vượt trần {SEND_FILE_MAX_BYTES} byte của Zalo OA",
+            }
 
     chat_id = _str(params.get("user_id")) or _str(params.get("chat_id"))
     if not chat_id:
@@ -198,11 +302,20 @@ def _send(params: Dict[str, Any], *, force_file: bool) -> Dict[str, Any]:
     caption = _str(params.get("caption"))
     filename = _str(params.get("filename")) or None
 
-    result, err = _run_on_gateway_loop(
-        adapter._send_attachment(
-            chat_id, path, caption, force_file=force_file, override_name=filename
+    try:
+        result, err = _run_on_gateway_loop(
+            adapter._send_attachment(
+                chat_id, path, caption, force_file=force_file, override_name=filename
+            )
         )
-    )
+    finally:
+        if tmp_path is not None:
+            # Dọn file tạm dù gửi thành công hay không — không để rác tích lại.
+            try:
+                tmp_path.unlink(missing_ok=True)
+                tmp_path.parent.rmdir()
+            except OSError:
+                pass
     if err:
         return {"success": False, "error": err, "chat_id": chat_id}
     if result is None or not getattr(result, "success", False):
@@ -270,11 +383,15 @@ SEND_FILE_SCHEMA = {
         "properties": {
             "file_path": {
                 "type": "string",
-                "description": "Đường dẫn tệp trên máy chủ. Không nhận URL.",
+                "description": "Đường dẫn tệp trên máy chủ. Dùng cái này HOẶC url.",
+            },
+            "url": {
+                "type": "string",
+                "description": "URL http/https công khai của tệp. Tool tự tải về rồi gửi.",
             },
             **_RECIPIENT_PROPS,
         },
-        "required": ["file_path"],
+        "required": [],
     },
 }
 
@@ -290,11 +407,15 @@ SEND_IMAGE_SCHEMA = {
         "properties": {
             "file_path": {
                 "type": "string",
-                "description": "Đường dẫn ảnh trên máy chủ. Không nhận URL.",
+                "description": "Đường dẫn ảnh trên máy chủ. Dùng cái này HOẶC url.",
+            },
+            "url": {
+                "type": "string",
+                "description": "URL http/https công khai của ảnh. Tool tự tải về rồi gửi.",
             },
             **_RECIPIENT_PROPS,
         },
-        "required": ["file_path"],
+        "required": [],
     },
 }
 

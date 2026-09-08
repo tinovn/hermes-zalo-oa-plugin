@@ -101,13 +101,10 @@ class SendFileTest(ToolBaseTest):
         self.assertTrue(self.adapter.calls[0]["force_file"])
         self.assertFalse(self.adapter.calls[1]["force_file"])
 
-    def test_url_is_refused_to_avoid_ssrf(self):
-        out = _call(oa_tools.handle_send_file, 
-            {"url": "http://169.254.169.254/latest/meta-data/", "user_id": "u1"}
-        )
+    def test_missing_both_sources_refused(self):
+        out = _call(oa_tools.handle_send_file, {"user_id": "u1"})
         self.assertFalse(out["success"])
-        self.assertIn("URL", out["error"])
-        self.assertEqual(self.adapter.calls, [], "không được gọi tới adapter")
+        self.assertIn("file_path", out["error"])
 
     def test_missing_file_reported_clearly(self):
         out = _call(oa_tools.handle_send_file, {"file_path": str(self.dir / "khong-co.pdf"), "user_id": "u1"})
@@ -129,10 +126,6 @@ class SendFileTest(ToolBaseTest):
         self.assertIn("vượt trần", out["error"])
         self.assertEqual(self.adapter.calls, [], "phải chặn TRƯỚC khi upload")
 
-    def test_missing_file_path_refused(self):
-        out = _call(oa_tools.handle_send_file, {"user_id": "u1"})
-        self.assertFalse(out["success"])
-        self.assertIn("file_path", out["error"])
 
     def test_failure_from_adapter_is_surfaced(self):
         self.adapter._result = _Result(success=False, error="[-201] file is invalid")
@@ -145,6 +138,38 @@ class SendFileTest(ToolBaseTest):
         out = _call(oa_tools.handle_send_file, {"file_path": str(self.f), "user_id": "u1"})
         self.assertFalse(out["success"])
         self.assertIn("chưa kết nối", out["error"])
+
+
+class SsrfGuardTest(unittest.TestCase):
+    """Tool nhận URL nên PHẢI chặn địa chỉ nội bộ. Kênh OA mở cho người lạ:
+    một URL do khách dẫn dụ agent dùng có thể trỏ vào metadata cloud."""
+
+    def test_blocks_cloud_metadata_and_private_ranges(self):
+        for url in (
+            "http://169.254.169.254/latest/meta-data/",   # metadata AWS/GCP
+            "http://127.0.0.1:9119/api/config",           # loopback
+            "http://10.0.0.5/secret",                      # private
+            "http://192.168.1.1/",                         # private
+            "http://[::1]/",                               # loopback IPv6
+        ):
+            err = oa_tools._check_public_url(url)
+            self.assertIsNotNone(err, f"phai chan {url}")
+            self.assertIn("nội bộ", err)
+
+    def test_blocks_non_http_schemes(self):
+        for url in ("file:///etc/passwd", "ftp://example.com/a", "gopher://x/"):
+            err = oa_tools._check_public_url(url)
+            self.assertIsNotNone(err, f"phai chan {url}")
+
+    def test_allows_public_https(self):
+        # example.com phân giải ra IP public — không chặn.
+        self.assertIsNone(oa_tools._check_public_url("https://example.com/qr.png"))
+
+    def test_redirects_are_not_followed(self):
+        # Cho redirect là mở lại đúng lỗ vừa bịt (302 sang 127.0.0.1).
+        self.assertIsNone(
+            oa_tools._NoRedirect().redirect_request(None, None, 302, "", {}, "http://127.0.0.1/")
+        )
 
 
 class ArgShapeTest(ToolBaseTest):
@@ -270,8 +295,13 @@ class RegisterToolsTest(unittest.TestCase):
             self.assertFalse(n.startswith("zalo_"), f"{n} se bi hook zalo-personal chan")
         for k in seen:
             self.assertEqual(k["toolset"], "hermes-zalo-oa")
-            self.assertIn("file_path", k["schema"]["parameters"]["properties"])
-            self.assertEqual(k["schema"]["parameters"]["required"], ["file_path"])
+            props = k["schema"]["parameters"]["properties"]
+            # Nhận cả hai nguồn: file trên đĩa HOẶC url. Không bắt buộc cái nào
+            # ở tầng schema vì thiếu cả hai đã có lỗi rõ ràng ở handler — bắt
+            # buộc file_path từng đẩy agent vào ngõ cụt khi nó chỉ có url.
+            self.assertIn("file_path", props)
+            self.assertIn("url", props)
+            self.assertEqual(k["schema"]["parameters"]["required"], [])
 
     def test_schema_warns_the_model_off_personal_tools_and_docx(self):
         # Hàng rào mềm nhưng là thứ duy nhất ngăn model chọn lại zalo_send_file
