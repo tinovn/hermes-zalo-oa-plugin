@@ -238,7 +238,12 @@ class RegisterToolsTest(unittest.TestCase):
 
         oa_tools.register_tools(Ctx())
         names = [k["name"] for k in seen]
-        self.assertEqual(names, ["zalo_oa_send_file", "zalo_oa_send_image"])
+        self.assertEqual(names, ["oa_send_file", "oa_send_image"])
+        # Tên KHÔNG được bắt đầu bằng "zalo_": hook pre_tool_call của plugin
+        # Zalo cá nhân chặn mọi tool có tiền tố đó khi phiên không phải
+        # zalo-personal. Đã gây loop vô hạn trên production một lần.
+        for n in names:
+            self.assertFalse(n.startswith("zalo_"), f"{n} se bi hook zalo-personal chan")
         for k in seen:
             self.assertEqual(k["toolset"], "hermes-zalo-oa")
             self.assertIn("file_path", k["schema"]["parameters"]["properties"])

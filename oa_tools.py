@@ -21,6 +21,14 @@ Ba ràng buộc phải trả giá mới biết, đừng phá:
    một tool tải URL tuỳ ý do agent chọn là lỗ SSRF trỏ thẳng vào mạng nội bộ.
    Cần gửi file từ web thì tải về đĩa bằng tool khác trước, rồi truyền path.
 
+4. **Tên tool KHÔNG được bắt đầu bằng ``zalo_``.** Plugin Zalo cá nhân cài
+   cùng máy đăng ký một hook ``pre_tool_call`` gác mọi tool có tiền tố đó
+   (``_is_zalo_tool = _base.startswith("zalo_")``) và TỪ CHỐI khi phiên không
+   phải ``zalo-personal`` — tức mọi phiên của kênh OA. Đã dính thật: bản đầu
+   đặt tên ``zalo_oa_send_image`` nên bị chặn, agent thử lại vô hạn và spam
+   khách hàng chục tin. Danh sách miễn trừ ``_SAFE_SEND`` của họ chỉ có tool
+   của chính họ, ta không thêm vào được.
+
 Gửi tin văn bản KHÔNG thuộc phạm vi ở đây — adapter tự trả lời trong luồng
 hội thoại. Hai tool này chỉ để đính kèm.
 """
@@ -234,7 +242,7 @@ _RECIPIENT_PROPS = {
 }
 
 SEND_FILE_SCHEMA = {
-    "name": "zalo_oa_send_file",
+    "name": "oa_send_file",
     "description": (
         "Gửi một tệp từ máy chủ tới khách qua Zalo Official Account. "
         "QUAN TRỌNG: Zalo OA chỉ nhận PDF cho tệp tài liệu — .docx/.doc/.csv bị "
@@ -256,7 +264,7 @@ SEND_FILE_SCHEMA = {
 }
 
 SEND_IMAGE_SCHEMA = {
-    "name": "zalo_oa_send_image",
+    "name": "oa_send_image",
     "description": (
         "Gửi một ảnh từ máy chủ tới khách qua Zalo Official Account. Chỉ nhận "
         "png/jpeg/gif/webp; ảnh lớn được tự nén xuống dưới trần ~1MB của Zalo. "
@@ -280,8 +288,8 @@ SEND_IMAGE_SCHEMA = {
 TOOLSET = "hermes-zalo-oa"
 
 _TOOLS = (
-    ("zalo_oa_send_file", SEND_FILE_SCHEMA, handle_send_file, "📎"),
-    ("zalo_oa_send_image", SEND_IMAGE_SCHEMA, handle_send_image, "🖼️"),
+    ("oa_send_file", SEND_FILE_SCHEMA, handle_send_file, "📎"),
+    ("oa_send_image", SEND_IMAGE_SCHEMA, handle_send_image, "🖼️"),
 )
 
 
