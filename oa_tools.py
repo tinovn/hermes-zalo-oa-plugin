@@ -219,12 +219,27 @@ def _send(params: Dict[str, Any], *, force_file: bool) -> Dict[str, Any]:
     }
 
 
-def handle_send_file(args: Any = None, **kwargs) -> Dict[str, Any]:
-    return _send(_params(args, kwargs), force_file=True)
+def _as_tool_result(payload: Dict[str, Any]) -> str:
+    """Trả CHUỖI JSON, không trả dict.
+
+    Tin ``role="tool"`` gửi lên provider phải có ``content`` là chuỗi hoặc
+    mảng. Trả dict thô thì DeepSeek đáp HTTP 400 "content should be a string
+    or a list" — và vì tin hỏng nằm lại trong lịch sử, MỌI lượt sau của phiên
+    đó đều fail, không riêng lượt gây lỗi. Hội thoại coi như chết hẳn.
+
+    Đã dính thật trên production: một tin ``oa_send_file`` trả dict làm hỏng
+    vĩnh viễn phiên chat của khách. Trong cùng payload đó, 100 tin tool khác
+    đều là chuỗi — ta là ngoại lệ duy nhất.
+    """
+    return json.dumps(payload, ensure_ascii=False)
 
 
-def handle_send_image(args: Any = None, **kwargs) -> Dict[str, Any]:
-    return _send(_params(args, kwargs), force_file=False)
+def handle_send_file(args: Any = None, **kwargs) -> str:
+    return _as_tool_result(_send(_params(args, kwargs), force_file=True))
+
+
+def handle_send_image(args: Any = None, **kwargs) -> str:
+    return _as_tool_result(_send(_params(args, kwargs), force_file=False))
 
 
 # ── schema ────────────────────────────────────────────────────────────────
