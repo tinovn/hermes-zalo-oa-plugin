@@ -229,6 +229,35 @@ class InboundTest(AdapterTestBase):
         self.assertEqual(got.media_urls, [str(img)])
         self.assertEqual(got.text, "ảnh này")
 
+    def test_anh_vao_duoc_ghi_so_cho_cau_landing(self):
+        """Sổ ảnh là nguồn DUY NHẤT của oa_upload_recent_image_to_landing.
+
+        Không ghi sổ thì agent bí đường và quay lại thói cũ: dán thẳng đường
+        dẫn /opt/data/... vào landing_update, trang xuất bản ra ảnh 404.
+        """
+        for i, name in enumerate(("a.jpg", "b.jpg")):
+            img = Path(self.dir) / name
+            img.write_bytes(b"\xff\xd8\xff")
+            ev = _event(
+                name="user_send_image",
+                msg_id=f"img-{i}",
+                message={
+                    "msg_id": f"img-{i}",
+                    "text": "",
+                    "attachments": [{"type": "image", "payload": {"url": "https://cdn/x.jpg"}}],
+                },
+            )
+            with mock.patch.object(A._media, "download_to", return_value=img):
+                self.feed(ev)
+
+        book = self.bot.recent_images(USER, count=5)
+        self.assertEqual([Path(r["local_path"]).name for r in book], ["a.jpg", "b.jpg"])
+        # Mặc định chỉ lấy ảnh mới nhất.
+        self.assertEqual(
+            Path(self.bot.recent_images(USER)[0]["local_path"]).name, "b.jpg")
+        # Chat khác không đọc được sổ của khách này.
+        self.assertEqual(self.bot.recent_images("nguoi-khac"), [])
+
     def test_failed_media_download_still_tells_the_agent(self):
         ev = _event(
             name="user_send_image",

@@ -27,6 +27,26 @@ Hệ quả cho các tính năng chủ động (nhắc lịch, follow-up, cron): 
 
 ---
 
+## Ảnh khách gửi → đưa lên landing
+
+Khách gửi ảnh trong chat OA rồi bảo "cho ảnh này lên web": agent gọi
+`oa_upload_recent_image_to_landing(slug, count=1..5)`. Plugin đọc ảnh từ sổ ảnh
+gần nhất của chính chat đó, thu nhỏ, rồi đẩy thẳng sang MCP
+(`landing_upload_image`) — base64 KHÔNG bao giờ đi qua model. Trả về
+`image_ref` (`asset://…`, trang mẫu TinoPage) hoặc `image_url` (trang tự thiết kế).
+
+Cần `TINO_LANDING_BRIDGE_URL` + `TINO_LANDING_BRIDGE_KEY`. Thiếu thì tool báo
+lỗi cấu hình để agent biết đường báo kỹ thuật.
+
+Vì sao không dùng tool của plugin Zalo cá nhân: tên nó bắt đầu bằng `zalo_` nên
+hook `pre_tool_call` bên đó chặn mọi phiên không phải `zalo-personal` — xem
+`oa_tools.py`. Bí đường, agent từng lấy đường dẫn cục bộ
+(`/opt/data/zalo-oa/media/….jpg` — Hermes gợi ý cho `vision_analyze`) nhét
+thẳng vào `landing_update`, và trang xuất bản ra `<img src="/opt/data/…">`,
+404 với mọi người xem. Mô tả tool nói rõ điều cấm này.
+
+---
+
 ## Không có gì (so với plugin Zalo cá nhân)
 
 Kết bạn / quét nhóm / nhắn người lạ · nhóm chat thường (OA chỉ có nhóm GMF) · "đang soạn tin" · thả cảm xúc · phễu marketing. Đây là giới hạn của nền tảng OA, không phải thiếu sót của plugin.
@@ -113,6 +133,8 @@ oa_client.py     — OAuth + Open API (gửi tin, upload ảnh/file, profile)
 oa_webhook.py    — HTTP server, xác thực chữ ký, bóc sự kiện
 oa_window.py     — sổ cửa sổ tư vấn 48h/7 ngày
 oa_media.py      — nén ảnh dưới trần ~1MB, tải media inbound có chặn dung lượng
+oa_tools.py      — tool cho agent: gửi file/ảnh ra, đưa ảnh khách gửi lên landing
+oa_landing_bridge.py — cầu ảnh → landing (đọc file an toàn, thu nhỏ, upload)
 outbound_scrub.py — chặn rò rỉ vận hành/tên model ra khách, markdown → plain
 message_filtering.py, image_resize.py  — dùng chung với plugin Zalo cá nhân
 ```

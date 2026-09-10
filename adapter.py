@@ -83,6 +83,11 @@ DEFAULT_WEBHOOK_PATH = "/webhooks/zalo-oa"
 DEFAULT_MAX_MESSAGE_LEN = 2000
 # Chống trùng: Zalo gửi lại webhook khi không nhận được 200 kịp.
 _SEEN_MSG_IDS_MAX = 1000
+# Sổ ảnh gần nhất mỗi chat — nguồn DUY NHẤT cho oa_upload_recent_image_to_landing.
+# Giữ ít thôi: chỉ cần đủ cho lượt "gửi 5 ảnh rồi bảo đưa lên web".
+_RECENT_IMAGES_PER_CHAT = 10
+# Trần số chat được theo dõi, tránh phình bộ nhớ khi OA đông khách lạ.
+_RECENT_IMAGES_MAX_CHATS = 500
 # Sự kiện không mang nội dung nhưng VẪN là tương tác của người dùng, tức mở
 # lại cửa sổ 48h (theo tài liệu vận hành OA: quan tâm OA, chia sẻ thông tin).
 WINDOW_OPENING_EVENTS = frozenset({"follow", "user_submit_info"})
@@ -235,6 +240,9 @@ class ZaloOaAdapter(BasePlatformAdapter):
         self._seen_msg_set: set = set()
         self._maint_notified: Dict[str, float] = {}
         self._profile_cache: Dict[str, Dict[str, Any]] = {}
+        # chat_id -> deque các ảnh khách vừa gửi (cũ→mới), xem
+        # ``remember_image``/``recent_images``.
+        self._recent_images: Dict[str, deque] = {}
         # Giữ tham chiếu task đang chạy: asyncio chỉ giữ weakref, task không
         # ai cầm có thể bị GC nuốt giữa chừng.
         self._tasks: set = set()
@@ -242,6 +250,36 @@ class ZaloOaAdapter(BasePlatformAdapter):
     @property
     def name(self) -> str:
         return "zalo-oa"
+
+    # ── sổ ảnh gần nhất ──────────────────────────────────────────────────
+
+    def remember_image(self, chat_id: str, local_path: str) -> None:
+        """Nhớ ảnh khách vừa gửi để tool đẩy lên landing dùng lại.
+
+        Chỉ lưu đường dẫn — bytes vẫn nằm trên đĩa, không giữ trong RAM.
+        """
+        cid = str(chat_id or "")
+        if not cid or not local_path:
+            return
+        book = self._recent_images.get(cid)
+        if book is None:
+            if len(self._recent_images) >= _RECENT_IMAGES_MAX_CHATS:
+                # Bỏ chat cũ nhất theo thứ tự chèn (dict giữ thứ tự từ 3.7).
+                self._recent_images.pop(next(iter(self._recent_images)), None)
+            book = deque(maxlen=_RECENT_IMAGES_PER_CHAT)
+            self._recent_images[cid] = book
+        book.append({"local_path": str(local_path), "ts": time.time()})
+
+    def recent_images(self, chat_id: str, count: int = 1) -> List[Dict[str, Any]]:
+        """``count`` ảnh gần nhất của chat, trả theo thứ tự cũ→mới."""
+        book = self._recent_images.get(str(chat_id or ""))
+        if not book:
+            return []
+        try:
+            n = max(1, min(int(count), _RECENT_IMAGES_PER_CHAT))
+        except (TypeError, ValueError):
+            n = 1
+        return list(book)[-n:]
 
     # ── vòng đời ─────────────────────────────────────────────────────────
     # is_reconnect: gateway truyền bằng keyword khi watcher dựng lại kết nối
@@ -444,6 +482,9 @@ class ZaloOaAdapter(BasePlatformAdapter):
                 if msg.media_kind == "image":
                     media_types.append(_media.content_type_for(path.name))
                     message_type = MessageType.PHOTO
+                    # Ghi sổ TRƯỚC khi giao cho agent: agent chỉ được cầm slug,
+                    # đường dẫn ảnh lấy từ sổ này chứ không do model truyền.
+                    self.remember_image(msg.user_id, str(path))
                 elif msg.media_kind == "audio":
                     media_types.append("audio")
                     message_type = MessageType.VOICE

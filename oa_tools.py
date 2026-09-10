@@ -54,6 +54,11 @@ from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+try:  # pragma: no cover - production nạp plugin theo đường dẫn
+    from . import oa_landing_bridge as _bridge  # type: ignore
+except Exception:  # pragma: no cover
+    import oa_landing_bridge as _bridge  # type: ignore
+
 # Adapter đang sống, do chính adapter đặt vào trong connect(). Đây là đường
 # DUY NHẤT để tool với tới token — xem ràng buộc 1 ở docstring.
 _LIVE_ADAPTER: Any = None
@@ -355,6 +360,131 @@ def handle_send_image(args: Any = None, **kwargs) -> str:
     return _as_tool_result(_send(_params(args, kwargs), force_file=False))
 
 
+# ── đưa ảnh khách gửi lên landing ─────────────────────────────────────────
+
+# Trần đọc phản hồi của MCP. Phản hồi chỉ là JSON metadata vài trăm byte;
+# đặt trần để một upstream hỏng không kéo cả lượt hội thoại đi theo.
+_BRIDGE_RESP_MAX_BYTES = 256 * 1024
+_BRIDGE_TIMEOUT_S = 120.0
+
+
+def _bridge_http_post(url: str, headers: Dict[str, str],
+                      body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST JSON sang MCP, KHÔNG đi theo redirect. Trả dict đã parse."""
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(url, data=data, method="POST")
+    for k, v in headers.items():
+        req.add_header(k, v)
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        with opener.open(req, timeout=_BRIDGE_TIMEOUT_S) as resp:
+            raw = resp.read(_BRIDGE_RESP_MAX_BYTES + 1)
+    except urllib.error.HTTPError as e:
+        # 4xx/5xx vẫn có thân JSON nói rõ lỗi — đọc để agent tự sửa.
+        try:
+            raw = e.read(_BRIDGE_RESP_MAX_BYTES + 1)
+        except Exception:
+            raise _bridge.BridgeError(f"HTTP {e.code}") from None
+    except Exception as e:
+        raise _bridge.BridgeError(f"transport error: {e.__class__.__name__}") from None
+    if len(raw) > _BRIDGE_RESP_MAX_BYTES:
+        raise _bridge.BridgeError("response too large")
+    try:
+        parsed = json.loads(raw) if raw else {}
+    except ValueError:
+        raise _bridge.BridgeError("invalid JSON response") from None
+    if isinstance(parsed, dict) and isinstance(parsed.get("result"), str):
+        # REST của MCP bọc kết quả trong chuỗi JSON: {"result": "{...}"}.
+        try:
+            inner = json.loads(parsed["result"])
+        except ValueError:
+            inner = None
+        if isinstance(inner, dict):
+            return inner
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _bridge_session_resolver(task_id: str) -> Optional[Dict[str, str]]:
+    """chat_id (khoá sổ ảnh) + conv_id (X-Session) từ ``task_id`` tin cậy.
+
+    conv_id PHẢI là ``zalo-oa:<chat_id>`` — đúng chuỗi mà Hermes chèn vào
+    ``conversation_id`` cho các tool ``mcp_tino_*`` của kênh này
+    (``_trusted_conversation_id``: ``<platform>:<chat_id>``). Lệch một chữ là
+    sang hội thoại khác: mất phiên OTP của khách, và trang đã có chủ thì
+    ``require_owner`` phía MCP từ chối thẳng.
+    """
+    chat_id = resolve_chat_id_from_task(task_id)
+    if not chat_id:
+        return None
+    return {"chat_id": chat_id, "conv_id": f"zalo-oa:{chat_id}"}
+
+
+def _upload_recent_image(params: Dict[str, Any]) -> Dict[str, Any]:
+    adapter = _LIVE_ADAPTER
+    if adapter is None:
+        return {"success": False, "error": "kênh zalo-oa chưa kết nối"}
+
+    slug = _str(params.get("slug"))
+    filename = _str(params.get("filename")) or None
+    try:
+        count = max(1, min(int(params.get("count") or 1), 5))
+    except (TypeError, ValueError):
+        count = 1
+
+    try:
+        cfg = _bridge.load_bridge_config(dict(os.environ), str(adapter.media_dir))
+        bridge = _bridge.OaLandingBridge(
+            cfg,
+            recent_fn=lambda chat_id, n: adapter.recent_images(chat_id, count=n),
+            session_resolver=_bridge_session_resolver,
+            http_post=_bridge_http_post,
+        )
+        result = bridge.upload_recent(
+            task_id=_str(params.get("task_id")),
+            slug=slug, filename=filename, count=count,
+        )
+    except _bridge.BridgeError as e:
+        err = str(e)
+        # Chỉ đường để agent tự sửa thay vì đổ tại ảnh của khách.
+        if "upload rejected" in err or "not_found" in err or "hội thoại khác" in err:
+            hint = ("Slug có thể SAI hoặc trang không thuộc hội thoại này. Gọi "
+                    "mcp_tino_landing_list lấy đúng slug rồi gọi lại. Nếu trang đã "
+                    "có chủ, khách phải auth_start/auth_verify trước. KHÔNG tự bịa slug.")
+        elif "no recent image" in err:
+            hint = "Nhờ khách gửi lại ảnh dạng ẢNH (không phải File), rồi thử lại."
+        elif "not configured" in err:
+            hint = ("Máy chủ chưa cấu hình TINO_LANDING_BRIDGE_URL/KEY — báo kỹ thuật, "
+                    "ĐỪNG bảo khách gửi lại ảnh.")
+        else:
+            hint = "Thử lại; nếu vẫn lỗi, nhờ khách gửi lại ảnh dạng ẢNH (không phải File)."
+        return {"success": False, "error": err, "hint": hint}
+    except Exception:
+        logger.warning("[zalo-oa] cầu ảnh landing lỗi", exc_info=True)
+        return {"success": False, "error": "upload lỗi nội bộ, thử lại sau."}
+
+    return {"success": True, **result, "hint": _placement_hint(result)}
+
+
+def _placement_hint(result: Dict[str, Any]) -> str:
+    """Dặn agent ĐẶT ảnh vào trang thế nào — thiếu câu này agent hay bỏ lửng
+    ở bước upload rồi báo khách là xong."""
+    images = result.get("images") or []
+    refs = [i.get("image_ref") for i in images if i.get("image_ref")]
+    if refs:
+        return ("Đặt ảnh vào trang bằng ops landing_update, path ảnh nhận đúng giá trị "
+                f"image_ref (vd \"{refs[0]}\"). Gọi landing_get trước để biết index "
+                "block. TUYỆT ĐỐI không dùng image_url cho trang mẫu TinoPage.")
+    urls = [i.get("image_url") for i in images if i.get("image_url")]
+    if urls:
+        return (f"Dùng image_url ({urls[0]}) làm hero_image/gallery trong HTML của "
+                "trang tự thiết kế.")
+    return "Upload xong nhưng không nhận được địa chỉ ảnh — thử lại."
+
+
+def handle_upload_recent_image_to_landing(args: Any = None, **kwargs) -> str:
+    return _as_tool_result(_upload_recent_image(_params(args, kwargs)))
+
+
 # ── schema ────────────────────────────────────────────────────────────────
 
 _RECIPIENT_PROPS = {
@@ -419,6 +549,39 @@ SEND_IMAGE_SCHEMA = {
     },
 }
 
+UPLOAD_IMAGE_SCHEMA = {
+    "name": "oa_upload_recent_image_to_landing",
+    "description": (
+        "Đưa ảnh khách VỪA GỬI trong chat này lên website/landing của khách và "
+        "trả về địa chỉ ảnh BỀN để đặt vào trang. Dùng tool này mỗi khi khách "
+        "gửi ảnh và muốn ảnh lên web. "
+        "TUYỆT ĐỐI KHÔNG lấy đường dẫn ảnh trên máy chủ (vd /opt/data/zalo-oa/"
+        "media/....jpg — đường dẫn Hermes gợi ý cho vision_analyze) đưa vào "
+        "landing_update: đường dẫn đó chỉ sống trong máy chủ, khách vào web sẽ "
+        "thấy ảnh vỡ. Chỉ truyền slug; ảnh và hội thoại do máy chủ tự xác định."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "slug": {
+                "type": "string",
+                "description": (
+                    "Slug landing của khách (lấy bằng mcp_tino_landing_list nếu chưa chắc)."
+                ),
+            },
+            "count": {
+                "type": "integer",
+                "description": "Số ảnh gần nhất cần đưa lên, 1-5. Mặc định 1.",
+            },
+            "filename": {
+                "type": "string",
+                "description": "Tên gợi ý cho file trên máy chủ (tuỳ chọn).",
+            },
+        },
+        "required": ["slug"],
+    },
+}
+
 # Toolset trùng tên toolset mặc định Hermes suy ra cho platform key "zalo-oa"
 # (``f"hermes-{platform}"``), nên tool xuất hiện đúng ở kênh này.
 TOOLSET = "hermes-zalo-oa"
@@ -426,6 +589,8 @@ TOOLSET = "hermes-zalo-oa"
 _TOOLS = (
     ("oa_send_file", SEND_FILE_SCHEMA, handle_send_file, "📎"),
     ("oa_send_image", SEND_IMAGE_SCHEMA, handle_send_image, "🖼️"),
+    ("oa_upload_recent_image_to_landing", UPLOAD_IMAGE_SCHEMA,
+     handle_upload_recent_image_to_landing, "🖼️"),
 )
 
 

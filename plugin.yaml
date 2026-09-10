@@ -1,7 +1,7 @@
 name: zalo-oa-platform
 label: Zalo OA (chính thức)
 kind: platform
-version: 0.1.0
+version: 0.2.0
 description: >
   Adapter Zalo Official Account cho Hermes Agent qua Open API chính thức
   (webhook vào, /v3.0/oa/message/cs ra). Không dùng API không chính thức nên
@@ -65,4 +65,16 @@ optional_env:
   - name: ZALO_OA_HOME_CHANNEL
     description: "user_id mặc định để cron/notification đẩy về."
     prompt: "Home channel"
+    password: false
+  - name: TINO_LANDING_BRIDGE_URL
+    description: "Endpoint landing_upload_image của MCP — bật tool đưa ảnh khách gửi lên landing."
+    prompt: "Landing bridge URL"
+    password: false
+  - name: TINO_LANDING_BRIDGE_KEY
+    description: "Agent key dùng cho cầu ảnh landing (chỉ để upload)."
+    prompt: "Landing bridge key"
+    password: true
+  - name: TINO_LANDING_IMAGE_MAX_DIM
+    description: "Cạnh dài nhất của ảnh sau khi thu nhỏ trước lúc upload (mặc định 1024)."
+    prompt: "Max image dimension"
     password: false

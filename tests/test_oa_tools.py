@@ -278,7 +278,7 @@ class ResultShapeTest(ToolBaseTest):
 
 
 class RegisterToolsTest(unittest.TestCase):
-    def test_registers_both_tools_in_the_oa_toolset(self):
+    def test_registers_tools_in_the_oa_toolset(self):
         seen = []
 
         class Ctx:
@@ -287,7 +287,10 @@ class RegisterToolsTest(unittest.TestCase):
 
         oa_tools.register_tools(Ctx())
         names = [k["name"] for k in seen]
-        self.assertEqual(names, ["oa_send_file", "oa_send_image"])
+        self.assertEqual(
+            names,
+            ["oa_send_file", "oa_send_image", "oa_upload_recent_image_to_landing"],
+        )
         # Tên KHÔNG được bắt đầu bằng "zalo_": hook pre_tool_call của plugin
         # Zalo cá nhân chặn mọi tool có tiền tố đó khi phiên không phải
         # zalo-personal. Đã gây loop vô hạn trên production một lần.
@@ -295,6 +298,9 @@ class RegisterToolsTest(unittest.TestCase):
             self.assertFalse(n.startswith("zalo_"), f"{n} se bi hook zalo-personal chan")
         for k in seen:
             self.assertEqual(k["toolset"], "hermes-zalo-oa")
+        for k in seen:
+            if k["name"] == "oa_upload_recent_image_to_landing":
+                continue  # tool này CỐ Ý không nhận đường dẫn/url từ model
             props = k["schema"]["parameters"]["properties"]
             # Nhận cả hai nguồn: file trên đĩa HOẶC url. Không bắt buộc cái nào
             # ở tầng schema vì thiếu cả hai đã có lỗi rõ ràng ở handler — bắt
