@@ -20,6 +20,15 @@ Ba ràng buộc phải giữ:
    Gửi uid trần sẽ thành hội thoại KHÁC: mất phiên OTP của khách và
    ``require_owner`` từ chối ngay khi trang đã có chủ.
 
+2b. **Phải gửi kèm ``X-Conv-Token``.** ``ensure_session`` phía MCP đòi HMAC
+   ``conv_token``; thiếu nó thì phiên OTP của khách coi như KHÔNG tồn tại, và
+   trang đã có chủ trả "Trang này thuộc tài khoản khác" — dù khách vừa đăng
+   nhập xong. Đã dính thật 10/09 16:10-16:13: khách xác thực lúc 16:12:38
+   (client_id 60989) mà ba lần upload liền sau đó vẫn bị từ chối. Token do
+   model đưa vào, KHÔNG phải lỗ hổng: nó là HMAC của (agent_id, conv_id) mà
+   ``X-Session`` ở đây do máy chủ tự suy ra — token của hội thoại khác sẽ
+   không khớp và bị từ chối.
+
 3. **base64 KHÔNG bao giờ đi qua LLM.** Đọc file → thu nhỏ → POST thẳng sang
    MCP. Kết quả trả về chỉ có ``image_url``/``image_ref``, không có đường dẫn
    cục bộ, không có tên người gửi.
@@ -188,7 +197,8 @@ class OaLandingBridge:
         self._post = http_post
 
     def upload_recent(self, *, task_id: str, slug: str,
-                      filename: Optional[str] = None, count: int = 1) -> Dict[str, Any]:
+                      filename: Optional[str] = None, count: int = 1,
+                      conv_token: Optional[str] = None) -> Dict[str, Any]:
         slug = str(slug or "").strip()
         if not slug:
             raise BridgeError("slug required")
@@ -223,7 +233,8 @@ class OaLandingBridge:
                 raise BridgeError("image too large")
             digest = hashlib.sha256(data).hexdigest()
             remote_name = content_addressed_name(filename, digest, ext)
-            uploaded = self._upload_one(conv_id, slug, data, mime, remote_name)
+            uploaded = self._upload_one(conv_id, slug, data, mime, remote_name,
+                                        conv_token=conv_token)
             entry: Dict[str, Any] = {
                 "image_url": uploaded["image_url"],
                 "filename": remote_name,
@@ -242,7 +253,7 @@ class OaLandingBridge:
         return {"slug": slug, "count": len(images), "images": images}
 
     def _upload_one(self, conv_id: str, slug: str, data: bytes, mime: str,
-                    remote_name: str) -> Dict[str, str]:
+                    remote_name: str, *, conv_token: Optional[str] = None) -> Dict[str, str]:
         """POST một ảnh; trả ``{"image_url", "image_ref"?}`` (không bao giờ bytes)."""
         import base64 as _b64
         headers = {
@@ -250,6 +261,9 @@ class OaLandingBridge:
             "X-Session": conv_id,
             "Content-Type": "application/json",
         }
+        if conv_token:
+            # Bằng chứng phiên OTP của khách — xem ràng buộc 2b ở docstring.
+            headers["X-Conv-Token"] = conv_token
         body = {
             "slug": slug,
             # base64 chỉ tồn tại trong request tiến-trình-sang-tiến-trình này,

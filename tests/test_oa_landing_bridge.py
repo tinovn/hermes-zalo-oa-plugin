@@ -64,6 +64,21 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(headers["X-Session"], "zalo-oa:123")
         self.assertEqual(headers["X-Agent-Key"], "k-test")
 
+    def test_gui_conv_token_de_chung_minh_phien_dang_nhap(self):
+        """Thiếu X-Conv-Token thì MCP coi như khách CHƯA đăng nhập.
+
+        Đã trả giá 10/09 16:10-16:13: khách xác thực xong (client_id 60989) mà
+        ba lần upload liền sau vẫn bị "Trang này thuộc tài khoản khác".
+        """
+        br = _bridge(self.dir, recents=[_Rec(self.img)], post=self._post_ok)
+        br.upload_recent(task_id="sess-1", slug="s", conv_token="tok-abc")
+        self.assertEqual(self.calls[0][1]["X-Conv-Token"], "tok-abc")
+
+    def test_khong_co_conv_token_thi_khong_gui_header_rong(self):
+        br = _bridge(self.dir, recents=[_Rec(self.img)], post=self._post_ok)
+        br.upload_recent(task_id="sess-1", slug="s")
+        self.assertNotIn("X-Conv-Token", self.calls[0][1])
+
     def test_ket_qua_khong_lo_base64_hay_duong_dan(self):
         br = _bridge(self.dir, recents=[_Rec(self.img)], post=self._post_ok)
         out = br.upload_recent(task_id="sess-1", slug="mimishop")
@@ -186,6 +201,30 @@ class ToolTest(unittest.TestCase):
                 {"slug": "s", "task_id": "sess-1"}))
         self.assertFalse(out["success"])
         self.assertIn("kỹ thuật", out["hint"])
+
+    def test_tool_chuyen_tiep_conv_token_cua_model(self):
+        seen = {}
+        def fake_post(url, headers, body):
+            seen.update(headers)
+            return {"image_ref": "asset://up-1", "image_url": "https://builder/a/up-1"}
+        with mock.patch.dict(os.environ, _ENV, clear=False), \
+             mock.patch.object(oa_tools, "resolve_chat_id_from_task", return_value="123"), \
+             mock.patch.object(oa_tools, "_bridge_http_post", side_effect=fake_post):
+            oa_tools.handle_upload_recent_image_to_landing(
+                {"slug": "s", "task_id": "sess-1", "conv_token": "tok-xyz"})
+        self.assertEqual(seen.get("X-Conv-Token"), "tok-xyz")
+        self.assertEqual(seen.get("X-Session"), "zalo-oa:123")
+
+    def test_bi_tu_choi_vi_trang_co_chu_thi_nhac_gui_conv_token(self):
+        with mock.patch.dict(os.environ, _ENV, clear=False), \
+             mock.patch.object(oa_tools, "resolve_chat_id_from_task", return_value="123"), \
+             mock.patch.object(oa_tools, "_bridge_http_post",
+                               return_value={"error": "forbidden",
+                                             "message": "Trang này thuộc tài khoản khác."}):
+            out = json.loads(oa_tools.handle_upload_recent_image_to_landing(
+                {"slug": "s", "task_id": "sess-1"}))
+        self.assertFalse(out["success"])
+        self.assertIn("conv_token", out["hint"])
 
     def test_conv_id_lay_tu_task_id(self):
         with mock.patch.object(oa_tools, "resolve_chat_id_from_task", return_value="777"):

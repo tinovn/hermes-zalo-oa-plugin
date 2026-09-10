@@ -1,7 +1,7 @@
 name: zalo-oa-platform
 label: Zalo OA (chính thức)
 kind: platform
-version: 0.2.0
+version: 0.2.1
 description: >
   Adapter Zalo Official Account cho Hermes Agent qua Open API chính thức
   (webhook vào, /v3.0/oa/message/cs ra). Không dùng API không chính thức nên

@@ -442,11 +442,16 @@ def _upload_recent_image(params: Dict[str, Any]) -> Dict[str, Any]:
         result = bridge.upload_recent(
             task_id=_str(params.get("task_id")),
             slug=slug, filename=filename, count=count,
+            conv_token=_str(params.get("conv_token")) or None,
         )
     except _bridge.BridgeError as e:
         err = str(e)
         # Chỉ đường để agent tự sửa thay vì đổ tại ảnh của khách.
-        if "upload rejected" in err or "not_found" in err or "hội thoại khác" in err:
+        if "tài khoản khác" in err or "thuộc tài khoản" in err:
+            hint = ("Trang đã có chủ nên máy chủ cần BẰNG CHỨNG đăng nhập: gọi lại tool "
+                    "này kèm tham số conv_token — đúng chuỗi conv_token con vẫn gửi cho "
+                    "các tool mcp_tino_*. Nếu chưa đăng nhập thì auth_start/auth_verify trước.")
+        elif "upload rejected" in err or "not_found" in err or "hội thoại khác" in err:
             hint = ("Slug có thể SAI hoặc trang không thuộc hội thoại này. Gọi "
                     "mcp_tino_landing_list lấy đúng slug rồi gọi lại. Nếu trang đã "
                     "có chủ, khách phải auth_start/auth_verify trước. KHÔNG tự bịa slug.")
@@ -576,6 +581,14 @@ UPLOAD_IMAGE_SCHEMA = {
             "filename": {
                 "type": "string",
                 "description": "Tên gợi ý cho file trên máy chủ (tuỳ chọn).",
+            },
+            "conv_token": {
+                "type": "string",
+                "description": (
+                    "Mã phiên hội thoại — ĐÚNG chuỗi conv_token vẫn gửi kèm cho các tool "
+                    "mcp_tino_*. BẮT BUỘC gửi khi trang đã có chủ (khách đã đăng nhập), "
+                    "nếu không máy chủ báo 'Trang này thuộc tài khoản khác'."
+                ),
             },
         },
         "required": ["slug"],
