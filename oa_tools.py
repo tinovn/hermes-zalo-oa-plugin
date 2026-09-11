@@ -557,9 +557,11 @@ SEND_IMAGE_SCHEMA = {
 UPLOAD_IMAGE_SCHEMA = {
     "name": "oa_upload_recent_image_to_landing",
     "description": (
-        "Đưa ảnh khách VỪA GỬI trong chat này lên website/landing của khách và "
-        "trả về địa chỉ ảnh BỀN để đặt vào trang. Dùng tool này mỗi khi khách "
-        "gửi ảnh và muốn ảnh lên web. "
+        "CHỈ DÙNG TRONG HỘI THOẠI ZALO OA. Chat Zalo cá nhân phải dùng "
+        "zalo_upload_recent_image_to_landing — gọi tool này ở đó luôn bị chặn "
+        "và khách không nhận được ảnh. "
+        "Đưa ảnh khách VỪA GỬI trong chat OA này lên website/landing của khách "
+        "và trả về địa chỉ ảnh BỀN để đặt vào trang. "
         "TUYỆT ĐỐI KHÔNG lấy đường dẫn ảnh trên máy chủ (vd /opt/data/zalo-oa/"
         "media/....jpg — đường dẫn Hermes gợi ý cho vision_analyze) đưa vào "
         "landing_update: đường dẫn đó chỉ sống trong máy chủ, khách vào web sẽ "
