@@ -134,6 +134,34 @@ class DownloadTest(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", side_effect=OSError("boom")):
             self.assertIsNone(oa_media.download_to("https://cdn.zalo/a.jpg", self.dir))
 
+    def test_empty_body_is_retried_until_data_arrives(self):
+        """CDN Zalo trả 200 thân RỖNG ngay sau webhook; vài giây sau mới có ảnh.
+
+        23/09 ca villadanang: 3 file 0 byte lúc 18:09:15 làm hỏng cả lô upload.
+        """
+        responses = [_FakeResponse([]), _FakeResponse([]), _FakeResponse([b"img"])]
+        with mock.patch("urllib.request.urlopen", side_effect=responses) as op, \
+                mock.patch("time.sleep") as sl:
+            path = oa_media.download_to("https://cdn.zalo/a.jpg", self.dir)
+        self.assertEqual(path.read_bytes(), b"img")
+        self.assertEqual(op.call_count, 3)
+        self.assertEqual(sl.call_count, 2)
+        self.assertEqual(list(self.dir.iterdir()), [path])  # không sót file 0 byte
+
+    def test_empty_body_every_time_returns_none_without_leftovers(self):
+        with mock.patch("urllib.request.urlopen", side_effect=lambda *a, **k: _FakeResponse([])) as op, \
+                mock.patch("time.sleep"):
+            self.assertIsNone(oa_media.download_to("https://cdn.zalo/a.jpg", self.dir))
+        self.assertEqual(op.call_count, 1 + len(oa_media._EMPTY_RETRY_DELAYS_S))
+        self.assertEqual(list(self.dir.iterdir()), [])
+
+    def test_network_error_is_not_retried(self):
+        with mock.patch("urllib.request.urlopen", side_effect=OSError("boom")) as op, \
+                mock.patch("time.sleep") as sl:
+            self.assertIsNone(oa_media.download_to("https://cdn.zalo/a.jpg", self.dir))
+        self.assertEqual(op.call_count, 1)
+        sl.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
