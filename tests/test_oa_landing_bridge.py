@@ -118,6 +118,29 @@ class BridgeTest(unittest.TestCase):
             br.upload_recent(task_id="sess-1", slug="sai-slug")
         self.assertIn("sai-slug", str(e.exception))
 
+    def test_anh_rong_trong_lo_bi_bo_qua_anh_tot_van_len(self):
+        """Một file 0 byte không được làm hỏng cả lô (23/09 ca villadanang)."""
+        rong = Path(self.dir) / "rong.jpg"
+        rong.write_bytes(b"")
+        br = _bridge(self.dir, recents=[_Rec(rong), _Rec(self.img)], post=self._post_ok)
+        out = br.upload_recent(task_id="sess-1", slug="s", count=2)
+        self.assertEqual(out["count"], 1)
+        self.assertEqual(out["skipped"], 1)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_ca_lo_hong_van_bao_loi_nhu_cu(self):
+        rong = Path(self.dir) / "rong.jpg"
+        rong.write_bytes(b"")
+        br = _bridge(self.dir, recents=[_Rec(rong)], post=self._post_ok)
+        with self.assertRaises(B.BridgeError) as e:
+            br.upload_recent(task_id="sess-1", slug="s")
+        self.assertIn("not a valid image", str(e.exception))
+        self.assertEqual(self.calls, [])
+
+    def test_lo_du_khong_co_truong_skipped(self):
+        br = _bridge(self.dir, recents=[_Rec(self.img)], post=self._post_ok)
+        self.assertNotIn("skipped", br.upload_recent(task_id="sess-1", slug="s"))
+
     def test_thieu_slug_va_khong_co_anh(self):
         br = _bridge(self.dir, recents=[_Rec(self.img)], post=self._post_ok)
         with self.assertRaises(B.BridgeError):
@@ -187,6 +210,22 @@ class ToolTest(unittest.TestCase):
         self.assertTrue(out["success"])
         self.assertIn("asset://up-1", out["hint"])
         self.assertIn("landing_update", out["hint"])
+
+    def test_co_anh_bi_bo_qua_thi_dan_agent_bao_khach_gui_lai(self):
+        rong = Path(self.dir) / "rong.jpg"
+        rong.write_bytes(b"")
+        oa_tools.set_live_adapter(_FakeAdapter(self.dir, [_Rec(rong), _Rec(Path(self.dir) / "a.jpg")]))
+        with mock.patch.dict(os.environ, _ENV, clear=False), \
+             mock.patch.object(oa_tools, "resolve_chat_id_from_task", return_value="123"), \
+             mock.patch.object(oa_tools, "_bridge_http_post",
+                               return_value={"image_ref": "asset://up-1",
+                                             "image_url": "https://builder/a/up-1"}):
+            out = json.loads(oa_tools.handle_upload_recent_image_to_landing(
+                {"slug": "s", "task_id": "sess-1", "count": 2}))
+        self.assertTrue(out["success"])
+        self.assertEqual(out["skipped"], 1)
+        self.assertIn("gửi lại", out["hint"])
+        self.assertIn("asset://up-1", out["hint"])
 
     def test_chua_ket_noi_thi_bao_loi_chu_khong_no(self):
         oa_tools.clear_live_adapter()

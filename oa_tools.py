@@ -467,7 +467,11 @@ def _upload_recent_image(params: Dict[str, Any]) -> Dict[str, Any]:
         logger.warning("[zalo-oa] cầu ảnh landing lỗi", exc_info=True)
         return {"success": False, "error": "upload lỗi nội bộ, thử lại sau."}
 
-    return {"success": True, **result, "hint": _placement_hint(result)}
+    hint = _placement_hint(result)
+    if result.get("skipped"):
+        hint = (f"{result['skipped']} ảnh không đọc được nên đã bỏ qua — báo khách số ảnh "
+                "đã lên và nhờ gửi lại riêng các ảnh còn thiếu. " + hint)
+    return {"success": True, **result, "hint": hint}
 
 
 def _placement_hint(result: Dict[str, Any]) -> str:

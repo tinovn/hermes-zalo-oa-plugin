@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -36,6 +37,9 @@ IMAGE_TARGET_BYTES = 900_000
 # một file rác không làm nghẽn tiến trình.
 INBOUND_MAX_BYTES = 25 * 1024 * 1024
 _DOWNLOAD_TIMEOUT_S = 30.0
+# CDN Zalo đôi khi trả 200 với thân RỖNG ngay sau webhook (ảnh chưa sẵn); tải lại
+# vài giây sau thì đủ. Đo 23/09: 7/21 ảnh inbound trong ngày về 0 byte.
+_EMPTY_RETRY_DELAYS_S = (1.0, 2.0, 4.0)
 
 IMAGE_EXTS = frozenset({"jpg", "jpeg", "png", "gif", "webp"})
 # GIF không nén lại được (re-encode làm mất animation) — quá cỡ thì để tầng
@@ -163,27 +167,36 @@ def download_to(
     if "." not in name:
         name += ".bin"
     dest_dir = Path(dest_dir)
-    try:
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        out_path = dest_dir / f"{uuid.uuid4().hex[:12]}_{name}"
-        req = urllib.request.Request(url, headers={"User-Agent": "hermes-zalo-oa/1.0"})
-        with urllib.request.urlopen(req, timeout=_DOWNLOAD_TIMEOUT_S) as r:
-            total = 0
-            with open(out_path, "wb") as f:
-                while True:
-                    chunk = r.read(64 * 1024)
-                    if not chunk:
-                        break
-                    total += len(chunk)
-                    if total > max_bytes:
-                        f.close()
-                        out_path.unlink(missing_ok=True)
-                        logger.warning(
-                            f"[zalo-oa] media inbound vượt trần {max_bytes} bytes — bỏ qua"
-                        )
-                        return None
-                    f.write(chunk)
-        return out_path
-    except (urllib.error.URLError, OSError, ValueError) as e:
-        logger.warning(f"[zalo-oa] tải media inbound lỗi: {e}")
-        return None
+    for delay in (0.0, *_EMPTY_RETRY_DELAYS_S):
+        if delay:
+            time.sleep(delay)
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            out_path = dest_dir / f"{uuid.uuid4().hex[:12]}_{name}"
+            req = urllib.request.Request(url, headers={"User-Agent": "hermes-zalo-oa/1.0"})
+            with urllib.request.urlopen(req, timeout=_DOWNLOAD_TIMEOUT_S) as r:
+                total = 0
+                with open(out_path, "wb") as f:
+                    while True:
+                        chunk = r.read(64 * 1024)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > max_bytes:
+                            f.close()
+                            out_path.unlink(missing_ok=True)
+                            logger.warning(
+                                f"[zalo-oa] media inbound vượt trần {max_bytes} bytes — bỏ qua"
+                            )
+                            return None
+                        f.write(chunk)
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            logger.warning(f"[zalo-oa] tải media inbound lỗi: {e}")
+            return None
+        if total:
+            return out_path
+        out_path.unlink(missing_ok=True)   # thân rỗng: CDN chưa có ảnh, tải lại
+    logger.warning(
+        f"[zalo-oa] media inbound rỗng sau {1 + len(_EMPTY_RETRY_DELAYS_S)} lần tải — bỏ qua"
+    )
+    return None

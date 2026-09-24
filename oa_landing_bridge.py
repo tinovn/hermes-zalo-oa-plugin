@@ -218,14 +218,20 @@ class OaLandingBridge:
             raise BridgeError("no recent image in this chat")
 
         images: List[Dict[str, Any]] = []
+        loi_doc: List[str] = []
         for rec in recents:
             local_path = getattr(rec, "local_path", None)
             if local_path is None and isinstance(rec, dict):
                 local_path = rec.get("local_path")
-            data, mime, ext = read_cached_image(
-                self._cfg.media_dir, str(local_path or ""),
-                max_bytes=MAX_SOURCE_IMAGE_BYTES,
-            )
+            try:
+                data, mime, ext = read_cached_image(
+                    self._cfg.media_dir, str(local_path or ""),
+                    max_bytes=MAX_SOURCE_IMAGE_BYTES,
+                )
+            except BridgeError as e:
+                # Một file hỏng (vd Zalo trả 0 byte) không được kéo cả lô chết theo.
+                loi_doc.append(str(e))
+                continue
             rr = resize_image_to_max_dim(data, mime=mime, ext=ext, max_dim=self._cfg.max_dim)
             data, mime, ext = rr.data, rr.mime, rr.ext
             if len(data) > MAX_IMAGE_BYTES:
@@ -249,8 +255,13 @@ class OaLandingBridge:
                 entry["width"] = rr.width
                 entry["height"] = rr.height
             images.append(entry)
+        if not images:
+            raise BridgeError(loi_doc[0])
         # Kết quả gọn: không có người gửi, đường dẫn cục bộ, chat id hay base64.
-        return {"slug": slug, "count": len(images), "images": images}
+        out: Dict[str, Any] = {"slug": slug, "count": len(images), "images": images}
+        if loi_doc:
+            out["skipped"] = len(loi_doc)
+        return out
 
     def _upload_one(self, conv_id: str, slug: str, data: bytes, mime: str,
                     remote_name: str, *, conv_token: Optional[str] = None) -> Dict[str, str]:
