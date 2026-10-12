@@ -1,7 +1,7 @@
 name: zalo-oa-platform
 label: Zalo OA (chính thức)
 kind: platform
-version: 0.3.0
+version: 0.4.0
 description: >
   Adapter Zalo Official Account cho Hermes Agent qua Open API chính thức
   (webhook vào, /v3.0/oa/message/cs ra). Không dùng API không chính thức nên
@@ -77,4 +77,12 @@ optional_env:
   - name: TINO_LANDING_IMAGE_MAX_DIM
     description: "Cạnh dài nhất của ảnh sau khi thu nhỏ trước lúc upload (mặc định 1024)."
     prompt: "Max image dimension"
+    password: false
+  - name: ZNS_RELAY_SECRET
+    description: "Khoá HMAC chung với MCP cho route POST /zns/send (chuyển tiếp ZNS). Bỏ trống = route trả 503."
+    prompt: "ZNS relay secret"
+    password: true
+  - name: ZALO_ZNS_TEMPLATES
+    description: "JSON {mã mẫu nội bộ: template_id Zalo đã duyệt}, vd {\"don_xac_nhan\": \"<id>\"}."
+    prompt: "ZNS templates (JSON)"
     password: false

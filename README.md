@@ -23,7 +23,7 @@ Vì vậy plugin có **sổ theo dõi cửa sổ** (`consultation_window.json`) 
 ZALO_OA_ALLOW_PAID_WINDOW=true
 ```
 
-Hệ quả cho các tính năng chủ động (nhắc lịch, follow-up, cron): khách im quá 7 ngày là **không** với tới được nữa, kể cả chịu trả tiền. Muốn nhắn ngoài luồng đó phải dùng ZNS Template Message (đăng ký + duyệt + trả phí) — plugin này **chưa** làm.
+Hệ quả cho các tính năng chủ động (nhắc lịch, follow-up, cron): khách im quá 7 ngày là **không** với tới được nữa, kể cả chịu trả tiền. Muốn nhắn ngoài luồng đó phải dùng ZNS Template Message (đăng ký + duyệt + trả phí) — plugin chỉ **chuyển tiếp** tin ZNS do MCP gửi tới (xem "ZNS relay" bên dưới), không tự gửi.
 
 ---
 
@@ -48,6 +48,35 @@ hook `pre_tool_call` bên đó chặn mọi phiên không phải `zalo-personal`
 (`/opt/data/zalo-oa/media/….jpg` — Hermes gợi ý cho `vision_analyze`) nhét
 thẳng vào `landing_update`, và trang xuất bản ra `<img src="/opt/data/…">`,
 404 với mọi người xem. Mô tả tool nói rõ điều cấm này.
+
+---
+
+## ZNS relay
+
+Tin ZNS cho khách của chủ website (xác nhận đơn, lịch hẹn, đặt bàn…) do builder → MCP
+quyết định và ký; plugin chỉ là chặng cuối, vì token OA chỉ sống trong gateway này.
+Route `POST /zns/send` trên chính webhook server (`oa_zns.py`):
+
+- **Xác thực**: `X-Zns-Timestamp` (giây unix, lệch ≤ 5 phút), `X-Zns-Nonce` (hex, nhớ 10
+  phút — gửi lại là 401), `X-Zns-Signature: sha256=<HMAC-SHA256(ZNS_RELAY_SECRET,
+  ts + "." + nonce + "." + raw_body)>`. Sai → 401.
+- **Body**: `{template, phone, params{…}, ref_type, ref_id}`. `template` là mã nội bộ, đổi
+  sang `template_id` theo `ZALO_ZNS_TEMPLATES` (mã lạ → 422); `phone` nhận `+84…`/`0…`,
+  gửi đi dạng `84…`; `tracking_id = ref_type:ref_id`.
+- **Gửi**: `POST https://business.openapi.zalo.me/message/template` với `access_token`
+  ĐANG CÓ trong `oa_tokens.json` — **chỉ đọc**: không refresh, không tạo OaClient thứ
+  hai, không ghi file (refresh token dùng một lần; hai nơi refresh là mất quyền OA).
+- **Kết quả**: 200 `{msg_id}` · 409 giờ yên lặng 22h–6h (giờ Việt Nam) · 422 lỗi không
+  thử lại được (mẫu chưa duyệt, SĐT không nhận ZNS, tham số sai; kèm `zalo_error`) ·
+  502 thử lại được (mạng, Zalo 5xx, token hết hạn) · 503 chưa đặt `ZNS_RELAY_SECRET`.
+- Log chỉ ghi 3 số cuối SĐT, không bao giờ ghi token.
+
+| Biến | Ý nghĩa |
+|---|---|
+| `ZNS_RELAY_SECRET` | Khoá HMAC dùng chung với MCP. Bỏ trống = tắt route (503). |
+| `ZALO_ZNS_TEMPLATES` | JSON `{"don_xac_nhan": "<template_id>", …}` — id mẫu sau khi Zalo duyệt. |
+
+Reverse proxy phải chuyển cả `/zns/send` (không chỉ đường webhook) về cổng của plugin.
 
 ---
 
