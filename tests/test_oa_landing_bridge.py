@@ -155,6 +155,67 @@ class BridgeTest(unittest.TestCase):
                                   "TINO_LANDING_BRIDGE_KEY": "k"}, self.dir)
 
 
+class ViTriTest(unittest.TestCase):
+    """vi_tri = Ô TRÊN TRANG (từ landing_map), không phải file: kiểm dạng ở cầu, chỉ
+    chuyển page/index/path; MCP kiểm ô format:image rồi tự gắn ảnh."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.img = Path(self.dir) / "anh1.jpg"
+        self.img.write_bytes(_JPEG)
+        self.calls = []
+
+    def _post(self, resp):
+        def post(url, headers, body):
+            self.calls.append(body)
+            return resp
+        return post
+
+    def test_chuan_hoa_chi_giu_page_index_path(self):
+        self.assertIsNone(B.normalize_vi_tri(None))
+        self.assertEqual(B.normalize_vi_tri({"index": 2, "la": 1}), {"page": 0, "index": 2})
+        self.assertEqual(B.normalize_vi_tri('{"page": 1, "index": 3, "path": "items[0].image"}'),
+                         {"page": 1, "index": 3, "path": "items[0].image"})
+        for xau in ({"page": 0}, {"index": -2}, {"index": 1, "path": "/opt/data/zalo-oa/x.jpg"},
+                    "khong-phai-json", 5):
+            with self.assertRaises(B.BridgeError):
+                B.normalize_vi_tri(xau)
+
+    def test_gui_vi_tri_va_tra_ket_qua_gan(self):
+        br = _bridge(self.dir, recents=[_Rec(self.img)], post=self._post(
+            {"image_ref": "asset://up-1", "image_url": "https://builder/a/up-1",
+             "gan_vao_trang": True, "url": "https://builder/mimishop",
+             "vi_tri": {"page": 0, "index": 2, "path": "image"}}))
+        out = br.upload_recent(task_id="sess-1", slug="mimishop", vi_tri={"index": 2})
+        self.assertEqual(self.calls[0]["vi_tri"], {"page": 0, "index": 2})
+        self.assertTrue(out["gan_vao_trang"])
+        self.assertEqual(out["url"], "https://builder/mimishop")
+
+    def test_khong_vi_tri_than_request_nhu_cu(self):
+        br = _bridge(self.dir, recents=[_Rec(self.img)], post=self._post(
+            {"image_ref": "asset://up-1", "image_url": "https://builder/a/up-1"}))
+        out = br.upload_recent(task_id="sess-1", slug="s")
+        self.assertNotIn("vi_tri", self.calls[0])
+        self.assertNotIn("gan_vao_trang", out)
+
+    def test_vi_tri_nhieu_anh_bi_chan_truoc_khi_gui(self):
+        br = _bridge(self.dir, recents=[_Rec(self.img), _Rec(self.img)], post=self._post({}))
+        with self.assertRaises(B.BridgeError):
+            br.upload_recent(task_id="sess-1", slug="s", count=2, vi_tri={"index": 2})
+        self.assertEqual(self.calls, [])
+
+    def test_muc_nhieu_o_anh_tra_danh_sach_cho_agent(self):
+        br = _bridge(self.dir, recents=[_Rec(self.img)], post=self._post(
+            {"error": "invalid_parameter", "code": "CHON_O_ANH", "message": "Mục này có 2 ô ảnh",
+             "o_anh": [{"path": "items.0.image", "label": "Ảnh"},
+                       {"path": "items.1.image", "label": "Ảnh"}],
+             "next_step": "Hỏi khách thay ảnh thứ mấy"}))
+        with self.assertRaises(B.BridgeError) as cm:
+            br.upload_recent(task_id="sess-1", slug="s", vi_tri={"index": 3})
+        self.assertEqual(cm.exception.details["code"], "CHON_O_ANH")
+        self.assertEqual(len(cm.exception.details["o_anh"]), 2)
+
+
 class _FakeAdapter:
     def __init__(self, media_dir, images):
         self.media_dir = Path(media_dir)
@@ -225,6 +286,49 @@ class ToolTest(unittest.TestCase):
                 {"slug": "s", "task_id": "sess-1"}))
         self.assertFalse(out["success"])
         self.assertIn("conv_token", out["hint"])
+
+    def test_tool_chuyen_vi_tri_va_bao_da_gan(self):
+        seen = {}
+        def fake_post(url, headers, body):
+            seen.update(body)
+            return {"image_ref": "asset://up-1", "image_url": "https://builder/a/up-1",
+                    "gan_vao_trang": True, "url": "https://builder/mimishop"}
+        with mock.patch.dict(os.environ, _ENV, clear=False), \
+             mock.patch.object(oa_tools, "resolve_chat_id_from_task", return_value="123"), \
+             mock.patch.object(oa_tools, "_bridge_http_post", side_effect=fake_post):
+            out = json.loads(oa_tools.handle_upload_recent_image_to_landing(
+                {"slug": "mimishop", "task_id": "sess-1",
+                 "vi_tri": {"page": 0, "index": 2, "path": "image"}}))
+        self.assertEqual(seen["vi_tri"], {"page": 0, "index": 2, "path": "image"})
+        self.assertTrue(out["success"] and out["gan_vao_trang"])
+        self.assertIn("đã gắn", out["hint"])
+
+    def test_tool_o_anh_chua_ro_tra_lua_chon(self):
+        with mock.patch.dict(os.environ, _ENV, clear=False), \
+             mock.patch.object(oa_tools, "resolve_chat_id_from_task", return_value="123"), \
+             mock.patch.object(oa_tools, "_bridge_http_post",
+                               return_value={"error": "invalid_parameter", "code": "CHON_O_ANH",
+                                             "message": "Mục này có 2 ô ảnh",
+                                             "o_anh": [{"path": "items.0.image"},
+                                                       {"path": "items.1.image"}],
+                                             "next_step": "Hỏi khách thay ảnh thứ mấy"}):
+            out = json.loads(oa_tools.handle_upload_recent_image_to_landing(
+                {"slug": "s", "task_id": "sess-1", "vi_tri": {"index": 3}}))
+        self.assertFalse(out["success"])
+        self.assertEqual(out["code"], "CHON_O_ANH")
+        self.assertEqual([o["path"] for o in out["o_anh"]], ["items.0.image", "items.1.image"])
+        self.assertIn("thay ảnh thứ mấy", out["hint"])
+
+    def test_cau_khong_sua_duoc_chu_bao_ro(self):
+        with mock.patch.dict(os.environ, _ENV, clear=False), \
+             mock.patch.object(oa_tools, "resolve_chat_id_from_task", return_value="123"), \
+             mock.patch.object(oa_tools, "_bridge_http_post",
+                               return_value={"error": "forbidden",
+                                             "message": "Cầu ảnh chỉ được gắn ảnh vào ô ảnh"}):
+            out = json.loads(oa_tools.handle_upload_recent_image_to_landing(
+                {"slug": "s", "task_id": "sess-1", "vi_tri": {"index": 2, "path": "heading"}}))
+        self.assertFalse(out["success"])
+        self.assertIn("landing_map", out["hint"])
 
     def test_conv_id_lay_tu_task_id(self):
         with mock.patch.object(oa_tools, "resolve_chat_id_from_task", return_value="777"):
