@@ -46,9 +46,6 @@ INTERACTION_EVENTS = frozenset(
 )
 
 _MAX_BODY_BYTES = 2 * 1024 * 1024
-# Route chuyển tiếp ZNS từ MCP (xem oa_zns.py) — có xác thực HMAC riêng.
-ZNS_PATH = "/zns/send"
-_MAX_ZNS_BODY_BYTES = 64 * 1024
 
 
 def compute_mac(app_id: str, raw_body: str, timestamp: str, oa_secret_key: str) -> str:
@@ -237,31 +234,9 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._send(404, {"error": "not found"})
 
-    def _handle_zns(self, relay: Any) -> None:
-        """POST /zns/send — chữ ký, nonce, gửi ZNS đều do relay lo (oa_zns.py)."""
-        if relay is None:
-            self._send(503, {"error": "zns relay chưa bật"})
-            return
-        try:
-            length = int(self.headers.get("Content-Length") or 0)
-        except ValueError:
-            length = 0
-        if length <= 0 or length > _MAX_ZNS_BODY_BYTES:
-            self._send(400, {"error": "bad length"})
-            return
-        try:
-            status, body = relay.handle(self.headers, self.rfile.read(length))
-        except Exception as e:  # pragma: no cover - phòng thủ
-            logger.error(f"[zalo-oa zns] lỗi không lường trước: {type(e).__name__}")
-            status, body = 502, {"error": "lỗi relay"}
-        self._send(status, body)
-
     def do_POST(self) -> None:  # noqa: N802
         cfg = self.server.oa_config  # type: ignore[attr-defined]
         parsed = urllib.parse.urlparse(self.path)
-        if (parsed.path.rstrip("/") or "/") == ZNS_PATH:
-            self._handle_zns(cfg.get("zns"))
-            return
         if (parsed.path.rstrip("/") or "/") != cfg["webhook_path"].rstrip("/"):
             self._send(404, {"error": "not found"})
             return
@@ -312,7 +287,6 @@ class WebhookServer:
         on_event: Callable[[Dict[str, Any]], Any],
         on_oauth_start: Callable[[], str],
         on_oauth_code: Callable[[str, str], Any],
-        zns: Optional[Any] = None,
     ):
         self.host, self.port = host, port
         self._loop = loop
@@ -328,9 +302,6 @@ class WebhookServer:
             "on_event": lambda ev: self._loop.call_soon_threadsafe(on_event, ev),
             "on_oauth_start": on_oauth_start,
             "on_oauth_code": on_oauth_code,
-            # oa_zns.ZnsRelay (handle(headers, raw_body) → (status, body)); None =
-            # route /zns/send trả 503.
-            "zns": zns,
         }
 
     @property

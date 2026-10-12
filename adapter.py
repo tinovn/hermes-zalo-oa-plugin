@@ -49,7 +49,6 @@ try:  # pragma: no cover - phụ thuộc cách nạp
     from . import oa_client as _oa
     from . import oa_media as _media
     from . import oa_webhook as _hook
-    from . import oa_zns as _zns
     from . import oa_tools as _tools
     from . import outbound_scrub as _scrub
     from .oa_window import ConsultationWindow
@@ -70,7 +69,6 @@ except Exception:  # pragma: no cover
     _oa = _load("zalo_oa_client", "oa_client.py")
     _media = _load("zalo_oa_media", "oa_media.py")
     _hook = _load("zalo_oa_webhook", "oa_webhook.py")
-    _zns = _load("zalo_oa_zns", "oa_zns.py")
     _scrub = _load("zalo_oa_outbound_scrub", "outbound_scrub.py")
     _tools = _load("zalo_oa_tools", "oa_tools.py")
     ConsultationWindow = _load("zalo_oa_window", "oa_window.py").ConsultationWindow
@@ -319,9 +317,6 @@ class ZaloOaAdapter(BasePlatformAdapter):
             on_event=self._on_webhook_event,
             on_oauth_start=self._oauth_start_url,
             on_oauth_code=lambda code, state: self._oauth_finish(code, state, loop),
-            # ZNS gửi bằng token ĐANG CÓ của chính gateway này — chỉ đọc self.tokens,
-            # không đi qua self.client (client sẽ refresh khi token sắp hết hạn).
-            zns=_zns.ZnsRelay.from_env(token_reader=lambda: _zns.current_access_token(self.tokens)),
         )
         try:
             self._server.start()
