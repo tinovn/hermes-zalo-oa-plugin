@@ -11,9 +11,12 @@ cho ``vision_analyze`` (``/opt/data/zalo-oa/media/<file>.jpg``) nhét thẳng v�
 
 Ba ràng buộc phải giữ:
 
-1. **Model chỉ được truyền ``slug``** (+ ``filename``/``count`` tuỳ chọn). Ảnh
-   lấy từ sổ ảnh gần nhất của CHÍNH chat đang nói chuyện, chat lấy từ
-   ``task_id`` tin cậy — model không truyền được ``chat_id`` hay đường dẫn.
+1. **Model chỉ được truyền ``slug``** (+ ``filename``/``count``/``vi_tri`` tuỳ
+   chọn). Ảnh lấy từ sổ ảnh gần nhất của CHÍNH chat đang nói chuyện, chat lấy
+   từ ``task_id`` tin cậy — model không truyền được ``chat_id`` hay đường dẫn.
+   ``vi_tri`` ``{page, index, path?}`` là Ô TRÊN TRANG (lấy từ ``landing_map``),
+   không phải file: kiểm dạng ở đây, chỉ chuyển ba khoá đó sang MCP, và MCP chỉ
+   gắn vào ô ``format:image`` đã kiểm (cầu không phiên OTP không sửa được chữ).
 
 2. **``X-Session`` phải đúng dạng ``zalo-oa:<user_id>``.** MCP chuẩn hoá conv
    bằng ``canon_conv`` — chỉ cắt tiền tố ``zalo:``, giữ nguyên ``zalo-oa:``.
@@ -40,6 +43,7 @@ vào) nên test được mà không cần mạng lẫn Hermes sống.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import stat
@@ -61,7 +65,53 @@ _STEM_RE = re.compile(r"[^a-z0-9]+")
 
 
 class BridgeError(Exception):
-    """Mọi lỗi kiểm tra/uỷ quyền — fail closed."""
+    """Mọi lỗi kiểm tra/uỷ quyền — fail closed.
+
+    ``details`` mang gợi ý máy của MCP khi ô ảnh chưa rõ/sai (``code``, ``o_anh``,
+    ``next_step``) để agent hỏi khách thay ảnh nào — không bao giờ có bytes/khoá.
+    """
+
+    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
+        super().__init__(message)
+        self.details = details or {}
+
+
+# Ô ảnh trên trang theo landing_map: ``image``, ``items.1.image``, ``items[1].image``.
+_SLOT_PATH_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+|\[\d+\])*$")
+# Phần MCP trả về sau khi gắn ảnh vào trang — chuyển nguyên cho agent.
+_ATTACH_KEYS = ("gan_vao_trang", "vi_tri", "url", "message", "loi_gan",
+                "ban_nhap_cua_khach", "dang_duoc", "missing")
+
+
+def normalize_vi_tri(raw: Any) -> Optional[Dict[str, Any]]:
+    """Kiểm ô trang model truyền; trả ``{page, index, path?}`` hoặc None.
+
+    Chỉ chuyển đúng ba khoá (input MCP cấm khoá lạ). Nhận cả chuỗi JSON vì có
+    model tuần tự hoá object lồng.
+    """
+    if raw in (None, "", {}):
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            raise BridgeError("vi_tri phải là object {page, index, path?} lấy từ landing_map")
+    if not isinstance(raw, dict):
+        raise BridgeError("vi_tri phải là object {page, index, path?} lấy từ landing_map")
+    try:
+        page = int(raw.get("page") or 0)
+        index = int(raw["index"])
+    except (KeyError, TypeError, ValueError):
+        raise BridgeError("vi_tri cần index (số mục lấy từ landing_map)")
+    if not (0 <= page <= 50 and 0 <= index <= 500):
+        raise BridgeError("vi_tri page/index ngoài phạm vi")
+    out: Dict[str, Any] = {"page": page, "index": index}
+    path = str(raw.get("path") or "").strip()
+    if path:
+        if len(path) > 120 or not _SLOT_PATH_RE.match(path):
+            raise BridgeError("vi_tri.path phải là ô ảnh dạng 'image' hoặc 'items.1.image'")
+        out["path"] = path
+    return out
 
 
 def sniff_image_bytes(head: Optional[bytes]) -> Optional[Tuple[str, str]]:
@@ -198,10 +248,12 @@ class OaLandingBridge:
 
     def upload_recent(self, *, task_id: str, slug: str,
                       filename: Optional[str] = None, count: int = 1,
-                      conv_token: Optional[str] = None) -> Dict[str, Any]:
+                      conv_token: Optional[str] = None,
+                      vi_tri: Any = None) -> Dict[str, Any]:
         slug = str(slug or "").strip()
         if not slug:
             raise BridgeError("slug required")
+        slot = normalize_vi_tri(vi_tri)
         sess = self._resolve(str(task_id or ""))
         if not sess or not sess.get("chat_id") or not sess.get("conv_id"):
             raise BridgeError("cannot resolve current chat/conversation")
@@ -212,6 +264,9 @@ class OaLandingBridge:
             n = max(1, min(int(count), 5))
         except (TypeError, ValueError):
             n = 1
+        if slot and n > 1:
+            # Một ô nhận một ảnh; nhiều ảnh sẽ đè nhau trên cùng ô.
+            raise BridgeError("vi_tri chỉ gắn MỘT ảnh: gọi với count=1")
 
         recents = self._recent(chat_id, n)  # cũ→mới
         if not recents:
@@ -234,7 +289,7 @@ class OaLandingBridge:
             digest = hashlib.sha256(data).hexdigest()
             remote_name = content_addressed_name(filename, digest, ext)
             uploaded = self._upload_one(conv_id, slug, data, mime, remote_name,
-                                        conv_token=conv_token)
+                                        conv_token=conv_token, vi_tri=slot)
             entry: Dict[str, Any] = {
                 "image_url": uploaded["image_url"],
                 "filename": remote_name,
@@ -250,11 +305,15 @@ class OaLandingBridge:
                 entry["height"] = rr.height
             images.append(entry)
         # Kết quả gọn: không có người gửi, đường dẫn cục bộ, chat id hay base64.
-        return {"slug": slug, "count": len(images), "images": images}
+        out: Dict[str, Any] = {"slug": slug, "count": len(images), "images": images}
+        if slot:
+            out.update(uploaded.get("attach") or {})
+        return out
 
     def _upload_one(self, conv_id: str, slug: str, data: bytes, mime: str,
-                    remote_name: str, *, conv_token: Optional[str] = None) -> Dict[str, str]:
-        """POST một ảnh; trả ``{"image_url", "image_ref"?}`` (không bao giờ bytes)."""
+                    remote_name: str, *, conv_token: Optional[str] = None,
+                    vi_tri: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """POST một ảnh; trả ``{"image_url", "image_ref"?, "attach"?}`` (không bao giờ bytes)."""
         import base64 as _b64
         headers = {
             "X-Agent-Key": self._cfg.key,
@@ -271,6 +330,8 @@ class OaLandingBridge:
             "image_base64": "data:%s;base64,%s" % (mime, _b64.b64encode(data).decode()),
             "filename": remote_name,
         }
+        if vi_tri:
+            body["vi_tri"] = vi_tri  # MCP gắn ảnh vào đúng ô ảnh đã kiểm
         resp = self._post(self._cfg.url, headers, body) or {}
         image_url = _extract_image_url(resp)
         image_ref = _extract_image_ref(resp)
@@ -279,13 +340,25 @@ class OaLandingBridge:
             # Không kèm key, không kèm payload.
             err = _extract_error_message(resp)
             raise BridgeError(f"upload rejected: {err}" if err
-                              else "upload failed: no image_url in response")
+                              else "upload failed: no image_url in response",
+                              details=_slot_details(resp))
         if not _is_durable_upload(image_url, image_ref):
             raise BridgeError("upload returned a non-durable URL")
-        out = {"image_url": image_url}
+        out: Dict[str, Any] = {"image_url": image_url}
         if image_ref:
             out["image_ref"] = image_ref
+        if vi_tri:
+            holder = resp.get("result") if isinstance(resp.get("result"), dict) else resp
+            out["attach"] = {k: holder[k] for k in _ATTACH_KEYS if k in holder}
         return out
+
+
+def _slot_details(resp: Dict[str, Any]) -> Dict[str, Any]:
+    """Gợi ý chọn ô của một lượt vi_tri bị từ chối (code, o_anh, next_step)."""
+    holder = resp.get("result") if isinstance(resp, dict) else None
+    if not isinstance(holder, dict):
+        holder = resp if isinstance(resp, dict) else {}
+    return {k: holder[k] for k in ("code", "o_anh", "next_step") if k in holder}
 
 
 def _extract_error_message(resp: Dict[str, Any]) -> str:

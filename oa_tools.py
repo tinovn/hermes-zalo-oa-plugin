@@ -443,11 +443,22 @@ def _upload_recent_image(params: Dict[str, Any]) -> Dict[str, Any]:
             task_id=_str(params.get("task_id")),
             slug=slug, filename=filename, count=count,
             conv_token=_str(params.get("conv_token")) or None,
+            vi_tri=params.get("vi_tri"),
         )
     except _bridge.BridgeError as e:
         err = str(e)
+        details = getattr(e, "details", None) or {}
+        if details.get("code") or details.get("o_anh"):
+            # Ô ảnh chưa rõ/sai (CHON_O_ANH, KHONG_PHAI_O_ANH…): đưa danh sách ô để agent
+            # hỏi khách thay ảnh nào; ảnh vẫn còn trong sổ ảnh nên gọi lại được.
+            return {"success": False, "error": err, **details,
+                    "hint": details.get("next_step") or
+                    "Chọn path trong o_anh (hoặc mcp_tino_landing_map(index=…)) rồi gọi lại."}
         # Chỉ đường để agent tự sửa thay vì đổ tại ảnh của khách.
-        if "tài khoản khác" in err or "thuộc tài khoản" in err:
+        if "ô ảnh" in err:
+            hint = ("vi_tri phải trỏ vào một Ô ẢNH của mục: mcp_tino_landing_map(slug, "
+                    "index=<mục>) xem các ô format:image rồi gọi lại với đúng path.")
+        elif "tài khoản khác" in err or "thuộc tài khoản" in err:
             hint = ("Trang đã có chủ nên máy chủ cần BẰNG CHỨNG đăng nhập: gọi lại tool "
                     "này kèm tham số conv_token — đúng chuỗi conv_token con vẫn gửi cho "
                     "các tool mcp_tino_*. Nếu chưa đăng nhập thì auth_start/auth_verify trước.")
@@ -472,13 +483,21 @@ def _upload_recent_image(params: Dict[str, Any]) -> Dict[str, Any]:
 
 def _placement_hint(result: Dict[str, Any]) -> str:
     """Dặn agent ĐẶT ảnh vào trang thế nào — thiếu câu này agent hay bỏ lửng
-    ở bước upload rồi báo khách là xong."""
+    ở bước upload rồi báo khách là xong. Có vi_tri thì MCP đã gắn (hoặc nói vì
+    sao chưa gắn được)."""
+    if result.get("gan_vao_trang"):
+        return f"Ảnh đã gắn vào đúng chỗ trên trang. Báo khách xem lại: {result.get('url') or ''}"
+    if result.get("loi_gan"):
+        return ("Ảnh đã tải lên nhưng CHƯA gắn được vào trang: làm theo loi_gan (next_step), "
+                "rồi gắn images[0].image_ref bằng mcp_tino_landing_update updateBlock.")
     images = result.get("images") or []
     refs = [i.get("image_ref") for i in images if i.get("image_ref")]
     if refs:
-        return ("Đặt ảnh vào trang bằng ops landing_update, path ảnh nhận đúng giá trị "
-                f"image_ref (vd \"{refs[0]}\"). Gọi landing_get trước để biết index "
-                "block. TUYỆT ĐỐI không dùng image_url cho trang mẫu TinoPage.")
+        return ("Ảnh CHƯA gắn vào trang. Thay ảnh một mục: mcp_tino_landing_map(slug) chọn "
+                "mục rồi gọi lại tool này kèm vi_tri {page, index, path?}. Hoặc "
+                "mcp_tino_landing_update updateBlock vào ô format:image (path lấy từ "
+                f"mcp_tino_landing_map(slug, index=…)) với value \"{refs[0]}\". TUYỆT ĐỐI "
+                "không dùng image_url cho trang mẫu TinoPage.")
     urls = [i.get("image_url") for i in images if i.get("image_url")]
     if urls:
         return (f"Dùng image_url ({urls[0]}) làm hero_image/gallery trong HTML của "
@@ -565,7 +584,9 @@ UPLOAD_IMAGE_SCHEMA = {
         "TUYỆT ĐỐI KHÔNG lấy đường dẫn ảnh trên máy chủ (vd /opt/data/zalo-oa/"
         "media/....jpg — đường dẫn Hermes gợi ý cho vision_analyze) đưa vào "
         "landing_update: đường dẫn đó chỉ sống trong máy chủ, khách vào web sẽ "
-        "thấy ảnh vỡ. Chỉ truyền slug; ảnh và hội thoại do máy chủ tự xác định."
+        "thấy ảnh vỡ. Ảnh và hội thoại do máy chủ tự xác định. Thay ảnh một mục "
+        "trên trang mẫu TinoPage: landing_map(slug) chọn mục rồi truyền vi_tri "
+        "{page, index, path?} → ảnh TỰ GẮN đúng ô ảnh (count=1)."
     ),
     "parameters": {
         "type": "object",
@@ -591,6 +612,20 @@ UPLOAD_IMAGE_SCHEMA = {
                     "mcp_tino_*. BẮT BUỘC gửi khi trang đã có chủ (khách đã đăng nhập), "
                     "nếu không máy chủ báo 'Trang này thuộc tài khoản khác'."
                 ),
+            },
+            "vi_tri": {
+                "type": "object",
+                "description": (
+                    "Ô ảnh cần thay, lấy từ landing_map: page (trang, mặc định 0), index "
+                    "(mục), path (ô ảnh, vd 'items.1.image'; bỏ trống khi mục chỉ có 1 ô "
+                    "ảnh). Có vi_tri thì chỉ gửi 1 ảnh."
+                ),
+                "properties": {
+                    "page": {"type": "integer"},
+                    "index": {"type": "integer"},
+                    "path": {"type": "string"},
+                },
+                "required": ["index"],
             },
         },
         "required": ["slug"],

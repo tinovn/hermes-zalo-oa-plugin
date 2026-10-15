@@ -35,6 +35,10 @@ gần nhất của chính chat đó, thu nhỏ, rồi đẩy thẳng sang MCP
 (`landing_upload_image`) — base64 KHÔNG bao giờ đi qua model. Trả về
 `image_ref` (`asset://…`, trang mẫu TinoPage) hoặc `image_url` (trang tự thiết kế).
 
+Thay ảnh một mục trên trang mẫu TinoPage: agent gọi `landing_map(slug)` chọn mục rồi
+truyền `vi_tri={page, index, path?}` (count=1) — MCP kiểm ô `format:image` rồi tự gắn
+ảnh và đăng lại. Mục có nhiều ô ảnh thì kết quả trả `o_anh` để hỏi khách ảnh nào.
+
 Cần `TINO_LANDING_BRIDGE_URL` + `TINO_LANDING_BRIDGE_KEY`. Thiếu thì tool báo
 lỗi cấu hình để agent biết đường báo kỹ thuật.
 
